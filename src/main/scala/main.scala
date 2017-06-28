@@ -1,8 +1,13 @@
-import org.apache.spark.SparkConf
-import org.apache.spark.SparkContext
-import org.apache.spark.SparkContext._
+import org.apache.spark.sql.SparkSession
 
 object main extends App {
-  val conf = new SparkConf().setMaster("local").setAppName("spark_test")
-  val sc = new SparkContext(conf)
+
+  val sparkSession = SparkSession.builder().appName("ClusterInvoice").master("local[4]").getOrCreate()
+  sparkSession.sparkContext.setLogLevel("ERROR")
+
+
+    val file_path = args(0)
+    val df = sparkSession.read.option("maxColumns", 30000).csv(file_path)
+    print(df.columns.length, df.count())
+
 }
