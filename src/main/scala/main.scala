@@ -1,13 +1,24 @@
-import org.apache.spark.sql.SparkSession
+
+import org.apache.spark.SparkContext
+import org.apache.spark.SparkConf
+import aux_funcs._
 
 object main extends App {
 
-  val sparkSession = SparkSession.builder().appName("ClusterInvoice").master("local[4]").getOrCreate()
-  sparkSession.sparkContext.setLogLevel("ERROR")
+  val sconf = new SparkConf().setAppName("hsplit").setMaster("local[*]")
+  val sc = new SparkContext(sconf)
+  sc.setLogLevel("ERROR")
+  val input = sc.textFile(args(0))
+
+  println(get_classes_and_count(input, ","))
 
 
-    val file_path = args(0)
-    val df = sparkSession.read.option("maxColumns", 30000).csv(file_path)
-    print(df.columns.length, df.count())
+
+
+
+
+
+
+
 
 }
