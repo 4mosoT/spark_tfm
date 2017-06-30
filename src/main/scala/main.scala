@@ -10,4 +10,6 @@ object main extends App {
     val df = sparkSession.read.option("maxColumns", 30000).csv(file_path)
     print(df.columns.length, df.count())
 
+    df.rdd.pa
+
 }
