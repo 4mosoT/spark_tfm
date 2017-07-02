@@ -1,20 +1,24 @@
 
-import org.apache.spark.SparkContext
-import org.apache.spark.SparkConf
 import aux_funcs._
+import org.apache.spark.sql.{SQLContext, SparkSession}
 
 object main extends App {
 
-  val sconf = new SparkConf().setAppName("hsplit").setMaster("local[*]")
-  val sc = new SparkContext(sconf)
+  val ss = SparkSession.builder().appName("hsplit").master("local[*]").getOrCreate()
+  val sc = ss.sparkContext
+
   sc.setLogLevel("ERROR")
-  val input = sc.textFile(args(0))
+
+  val dataframe = ss.read.csv(args(0))
+
+  val input = dataframe.rdd
 
 
-  val classes = get_classes_and_count(input, ",")
+  val classes = get_classes_and_count(input)
+  println(classes)
 
   val num_partitions = 8
-  val partitioned = input.map(line => (line.split(",").last, line)).partitionBy(new HorizontalPartitioner(num_partitions, classes.keys.toSet))
+  val partitioned = input.map(row => (row.get(row.size - 1), row)).partitionBy(new HorizontalPartitioner(num_partitions, classes.keys.toSet))
 
   for (x <- 0 until num_partitions) {
     println("Partition " + x)
