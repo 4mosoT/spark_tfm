@@ -13,6 +13,23 @@ object aux_funcs {
 
   }
 
+  def traspose_rdd(rdd: RDD[Row]): RDD[Seq[Any]] = {
+
+    val columnAndRow = rdd.map(_.toSeq).zipWithIndex.flatMap {
+      case (row, rowIndex) => row.zipWithIndex.map {
+        case (number, columnIndex) => columnIndex -> (rowIndex, number)
+      }
+    }
+
+    val byColumn = columnAndRow.groupByKey.sortByKey().values
+
+    byColumn.map {
+      indexedRow => indexedRow.toSeq.sortBy(_._1).map(_._2)
+    }
+
+
+  }
+
   class HorizontalPartitioner(numParts: Int, classes: Set[Any]) extends Partitioner {
 
     private val mapper = classes.map(_ -> 0).toMap
