@@ -1,15 +1,24 @@
-import org.apache.spark.sql.SparkSession
+
+import org.apache.spark.SparkContext
+import org.apache.spark.SparkConf
+import aux_funcs._
 
 object main extends App {
 
-  val sparkSession = SparkSession.builder().appName("ClusterInvoice").master("local[4]").getOrCreate()
-  sparkSession.sparkContext.setLogLevel("ERROR")
+  val sconf = new SparkConf().setAppName("hsplit").setMaster("local[*]")
+  val sc = new SparkContext(sconf)
+  sc.setLogLevel("ERROR")
+  val input = sc.textFile(args(0))
 
 
-    val file_path = args(0)
-    val df = sparkSession.read.option("maxColumns", 30000).csv(file_path)
-    print(df.columns.length, df.count())
+  val classes = get_classes_and_count(input, ",")
 
-    df.rdd.pa
+  val num_partitions = 8
+  val partitioned = input.map(line => (line.split(",").last, line)).partitionBy(new HorizontalPartitioner(num_partitions, classes.keys.toSet))
 
+  for (x <- 0 until num_partitions) {
+    println("Partition " + x)
+    val partition = partitioned.mapPartitionsWithIndex((index, iter) => if (index == x) iter else Iterator())
+    classes.keys.foreach(x => println(x, partition.filter(_._1 == x).count()))
+  }
 }
