@@ -1,19 +1,19 @@
 
 import aux_funcs._
-import org.apache.spark.sql.{SparkSession, Row}
+import org.apache.spark
+import org.apache.spark.sql.SparkSession
 
 object main extends App {
 
   val ss = SparkSession.builder().appName("hsplit").master("local[*]").getOrCreate()
   val sc = ss.sparkContext
-
   sc.setLogLevel("ERROR")
 
 
   val dataframe = ss.read.option("maxColumns", "30000").csv(args(0))
 
   val input = dataframe.rdd
-
+  
   //Particionado vertical (Matriz Traspuesta)
   val samples = dataframe.count()
   println(samples, dataframe.columns.length)
