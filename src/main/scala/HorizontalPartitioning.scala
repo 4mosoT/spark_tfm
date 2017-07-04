@@ -27,7 +27,6 @@ object HorizontalPartitioning {
         case (row, index) => (index % br_numParts.value, row)
       })
 
-    println(partitioned.countByKey())
   }
 
 
