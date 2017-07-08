@@ -10,7 +10,7 @@ object WekaWrapper {
     //The list of attributes to create the Weka "Instances"
     val attributes = new util.ArrayList[Attribute]()
 
-    // Getting the first row and iterate over its elements after indexing them
+    // Getting the first row and iterate over its elements after indexing them to add to attributes
     iter.head.toSeq.dropRight(1).zipWithIndex.foreach({
       case (value, index) =>
         // If the attribute is categorical we have to add the different values it can take

@@ -24,11 +24,11 @@ object HorizontalPartitioning {
 
 
     //TODO: check if categorical or numeric
-    val attributes = dataframe.columns.zipWithIndex.map({ case (value, index) =>
+    val categorical_attributes = dataframe.columns.zipWithIndex.map({ case (value, index) =>
       index -> dataframe.select(dataframe.columns(index)).distinct().collect().toSeq.map(_.get(0))}).toMap
-    val br_indexesvalues = ss.sparkContext.broadcast(attributes)
+    val br_indexesvalues = ss.sparkContext.broadcast(categorical_attributes)
 
-    val classes = attributes(dataframe.columns.length - 1)
+    val classes = categorical_attributes(dataframe.columns.length - 1)
     val br_classes = ss.sparkContext.broadcast(classes)
 
     val partitioned = input.map(row => (row.get(row.length - 1), row)).groupByKey()
