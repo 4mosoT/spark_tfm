@@ -1,9 +1,7 @@
-import java.util
-
 import org.apache.spark.sql.SparkSession
-
-import weka.core.Attribute
-import weka.core.{Instances, DenseInstance}
+import weka.attributeSelection.{CfsSubsetEval, GreedyStepwise}
+import weka.filters.Filter
+import weka.filters.supervised.attribute.AttributeSelection
 
 object HorizontalPartitioning {
 
@@ -24,7 +22,13 @@ object HorizontalPartitioning {
     val numParts = 8
     val br_numParts = ss.sparkContext.broadcast(numParts)
 
-    val classes = dataframe.select(dataframe.columns.last).distinct().collect().toSeq.map(_.get(0))
+
+    //TODO: check if categorical or numeric
+    val attributes = dataframe.columns.zipWithIndex.map({ case (value, index) =>
+      index -> dataframe.select(dataframe.columns(index)).distinct().collect().toSeq.map(_.get(0))}).toMap
+    val br_indexesvalues = ss.sparkContext.broadcast(attributes)
+
+    val classes = attributes(dataframe.columns.length - 1)
     val br_classes = ss.sparkContext.broadcast(classes)
 
     val partitioned = input.map(row => (row.get(row.length - 1), row)).groupByKey()
@@ -39,23 +43,39 @@ object HorizontalPartitioning {
 
     partitioned.groupByKey().map({ case (_, iter) =>
 
-      val attributes = new util.ArrayList[Attribute]()
-      iter.head.toSeq.dropRight(1).zipWithIndex.foreach({ case (value, index) => attributes.add(new Attribute("att_" + index)) })
-      val classValues = new util.ArrayList[String]()
-      classes.foreach(x => classValues.add(x.toString))
-      attributes.add(new Attribute("class", classValues))
+    val data = WekaWrapper.createInstances(iter, br_indexesvalues.value, br_classes.value)
 
-      val isTrainingSet = new Instances("Rel", attributes, iter.size)
-      isTrainingSet.setClassIndex(attributes.size() - 1)
+    //Run Weka Filter to FS
+    val filter = new AttributeSelection
+    val eval = new CfsSubsetEval
+    val search = new GreedyStepwise
+    search.setSearchBackwards(true)
+    filter.setEvaluator(eval)
+    filter.setSearch(search)
+    filter.setInputFormat(data)
 
-      val instance = new DenseInstance(attributes.size())
-
-      isTrainingSet
+    Filter.useFilter(data, filter)
 
 
-    }).take(10).foreach(println)
 
   }
+
+  ).take(10).foreach(println)
+
+}
+
+//TODO: Candidate to remove. Not used
+def parseNumeric(s: String): Option[Double] = {
+
+  try {
+    Some(s.toDouble)
+  } catch {
+    case e: Exception => None
+
+  }
+
+
+}
 
 
 }
