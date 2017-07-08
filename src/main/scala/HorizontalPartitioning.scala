@@ -1,6 +1,4 @@
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.Row
-import org.apache.spark.rdd.RDD
 
 object HorizontalPartitioning {
 
@@ -31,7 +29,7 @@ object HorizontalPartitioning {
         case (row, index) => (index % br_numParts.value, row)
       })
 
-    println(partitioned.countByKey())
+    partitioned.take(10).foreach(println)
   }
 
 
