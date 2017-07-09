@@ -25,8 +25,9 @@ object HorizontalPartitioning {
 
     //TODO: check if categorical or numeric
     val categorical_attributes = dataframe.columns.zipWithIndex.map({ case (value, index) =>
-      index -> dataframe.select(dataframe.columns(index)).distinct().collect().toSeq.map(_.get(0))}).toMap
-    val br_indexesvalues = ss.sparkContext.broadcast(categorical_attributes)
+      index -> dataframe.select(dataframe.columns(index)).distinct().collect().toSeq.map(_.get(0))
+    }).toMap
+    val br_categorical_attributes = ss.sparkContext.broadcast(categorical_attributes)
 
     val classes = categorical_attributes(dataframe.columns.length - 1)
     val br_classes = ss.sparkContext.broadcast(classes)
@@ -43,39 +44,35 @@ object HorizontalPartitioning {
 
     partitioned.groupByKey().map({ case (_, iter) =>
 
-    val data = WekaWrapper.createInstances(iter, br_indexesvalues.value, br_classes.value)
+      val data = WekaWrapper.createInstances(iter, br_categorical_attributes.value, br_classes.value)
 
-    //Run Weka Filter to FS
-    val filter = new AttributeSelection
-    val eval = new CfsSubsetEval
-    val search = new GreedyStepwise
-    search.setSearchBackwards(true)
-    filter.setEvaluator(eval)
-    filter.setSearch(search)
-    filter.setInputFormat(data)
+      //Run Weka Filter to FS
+      val filter = new AttributeSelection
+      val eval = new CfsSubsetEval
+      val search = new GreedyStepwise
+      search.setSearchBackwards(true)
+      filter.setEvaluator(eval)
+      filter.setSearch(search)
+      filter.setInputFormat(data)
 
-    Filter.useFilter(data, filter)
+      Filter.useFilter(data, filter)
 
 
+    }
 
-  }
-
-  ).take(10).foreach(println)
-
-}
-
-//TODO: Candidate to remove. Not used
-def parseNumeric(s: String): Option[Double] = {
-
-  try {
-    Some(s.toDouble)
-  } catch {
-    case e: Exception => None
+    ).take(10).foreach(println)
 
   }
 
+  //TODO: Candidate to remove. Not used
+  def parseNumeric(s: String): Option[Double] = {
+    try {
+      Some(s.toDouble)
+    } catch {
+      case e: Exception => None
 
-}
+    }
+  }
 
 
 }

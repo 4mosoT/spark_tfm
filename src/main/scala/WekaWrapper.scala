@@ -23,7 +23,6 @@ object WekaWrapper {
         }
     })
 
-
     //Add classes to attributes
     val classValues = new util.ArrayList[String]()
     classes.foreach(x => classValues.add(x.toString))
@@ -32,21 +31,21 @@ object WekaWrapper {
     // Weka Instances
     val data = new Instances("Rel", attributes, iter.size)
     data.setClassIndex(attributes.size() - 1)
-    
+
     // Once we have the Instances structure, we add the data itself
     iter.foreach({ row =>
       val instance = new DenseInstance(attributes.size())
       row.toSeq.zipWithIndex.foreach({ case (value, index) =>
-        if (categorical_attributes.keySet.contains(index)){
+        if (categorical_attributes.keySet.contains(index)) {
           instance.setValue(attributes.get(index), value.asInstanceOf[String])
-        }else{
+        } else {
           instance.setValue(attributes.get(index), value.toString.toDouble)
         }
       })
       data.add(instance)
     })
 
-      data
+    data
   }
 
 
