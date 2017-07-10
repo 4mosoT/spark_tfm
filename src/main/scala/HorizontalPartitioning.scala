@@ -19,8 +19,7 @@ object HorizontalPartitioning {
     val dataframe = ss.read.option("maxColumns", "30000").csv(args(0))
 
     val input = dataframe.rdd
-    val numParts = 8
-    val br_numParts = ss.sparkContext.broadcast(numParts)
+    val numParts: Int = 8
 
 
     //TODO: check if categorical or numeric
@@ -39,7 +38,7 @@ object HorizontalPartitioning {
       })
       .map({
         // Get the partition number for each row and make it the new key
-        case (row, index) => (index % br_numParts.value, row)
+        case (row, index) => (index % numParts, row)
       })
 
     partitioned.groupByKey().map({ case (_, iter) =>
