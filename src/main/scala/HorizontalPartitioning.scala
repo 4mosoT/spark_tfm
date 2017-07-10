@@ -19,7 +19,7 @@ object HorizontalPartitioning {
     val dataframe = ss.read.option("maxColumns", "30000").csv(args(0))
 
     val input = dataframe.rdd
-    val numParts: Int = 8
+    val numParts: Int = 1
 
 
     //TODO: check if categorical or numeric
