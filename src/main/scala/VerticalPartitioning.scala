@@ -32,33 +32,41 @@ object VerticalPartitioning {
     val attributes = dataframe.columns.zipWithIndex.map({ case (value, index) =>
       // If categorical we need to add the distinct values it can take plus its partition index
       if (categorical) {
-        index -> (Some(dataframe.select(dataframe.columns(index)).distinct().collect().toSeq.map(_.get(0))), index % numParts)
+        index -> Some(dataframe.select(dataframe.columns(index)).distinct().collect().toSeq.map(_.get(0)).toSeq)
       } else {
         // If not categorical we only need partition index
-        index -> (None, index % numParts)
+        index -> None
       }
     }).toMap
 
     val br_attributes = ss.sparkContext.broadcast(attributes)
-    val classes = attributes(dataframe.columns.length - 1)
+    val index_class = dataframe.columns.length - 1
+    val classes = attributes(index_class)
     val br_classes = ss.sparkContext.broadcast(classes)
 
 
-    val trasposed = trasposeRDD(input)
-    val partitioned = trasposed.zipWithIndex.map(line => (line._2 % numParts, line._1))
+    val transposed = transposeRDD(input)
 
+    // Get the class column
+    val br_class_column = ss.sparkContext.broadcast(transposed.filter { case (columnindex, row) => columnindex == index_class }.first())
+
+    //Remove the class column with filter and assign a partition
+    transposed.filter { case (columnindex, row) => columnindex != index_class }
+      .zipWithIndex.map(line => (line._2 % numParts, line._1))
+      .groupByKey().map {
+      case (_, iter) =>
+        val data = WekaWrapper.createInstancesFromTraspose(iter, br_attributes.value, br_class_column.value, br_classes.value)
+    }
 
   }
 
-  def trasposeRDD(rdd: RDD[Row]): RDD[Any] = {
+  def transposeRDD(rdd: RDD[Row]): RDD[(Int, Seq[Any])] = {
     val columnAndRow = rdd.zipWithIndex.flatMap {
       case (row, rowIndex) => row.toSeq.zipWithIndex.map {
         case (element, columnIndex) => columnIndex -> (rowIndex, element)
       }
     }
-    val byColumns = columnAndRow.groupByKey.sortByKey().values
-    byColumns.map { indexedRow => indexedRow.toSeq.sortBy(_._1).map(_._2) }
-
+    columnAndRow.groupByKey.sortByKey().map { case (columnIndex, rowIterable) => (columnIndex, rowIterable.toSeq.sortBy(_._1).map(_._2)) }
 
   }
 

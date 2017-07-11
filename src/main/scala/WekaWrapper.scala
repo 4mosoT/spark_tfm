@@ -48,9 +48,26 @@ object WekaWrapper {
     data
   }
 
+  def createInstancesFromTraspose(iter: Iterable[(Int, Seq[Any])], attributes: Map[Int, Option[Seq[Any]]],
+                                  class_column: (Int, Seq[Any]), classes: Option[Seq[Any]]): Instances = {
+    //The list of attributes to create the Weka "Instances"
+    val attributes = new util.ArrayList[Attribute]()
+
+    //     Getting the first row and iterate over its elements after indexing them to add to attributes
+    //    iter.head.toSeq.dropRight(1).zipWithIndex.foreach({
+    //      case (value, index) =>
+    //        // If the attribute is categorical we have to add the different values it can take
+    //        if (categorical_attributes.keySet.contains(index)) {
+    //          val attribute_values = new util.ArrayList[String]()
+    //          categorical_attributes(index).foreach(x => attribute_values.add(x.asInstanceOf[String]))
+    //          attributes.add(new Attribute("att_" + index, attribute_values))
+    //        } else {
+    //          attributes.add(new Attribute("att_" + index))
+    //        }
+    //    })
 
 
-
+  }
 
 
 }
