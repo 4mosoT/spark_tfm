@@ -30,11 +30,11 @@ object VerticalPartitioning {
     //TODO: check if categorical or numeric
     var categorical = true
     val attributes = dataframe.columns.zipWithIndex.map({ case (value, index) =>
-      // If categorical we need to add the distinct values it can take plus its partition index
+      // If categorical we need to add the distinct values it can take plus its column name
       if (categorical) {
         index -> (Some(dataframe.select(dataframe.columns(index)).distinct().collect().toSeq.map(_.get(0)).map(_.toString)), dataframe.columns(index))
       } else {
-        // If not categorical we only need partition index
+        // If not categorical we only need column name
         index -> (None, dataframe.columns(index))
       }
     }).toMap
@@ -48,7 +48,7 @@ object VerticalPartitioning {
     val transposed = transposeRDD(input)
     // Get the class column
     val br_class_column = ss.sparkContext.broadcast(transposed.filter { case (columnindex, row) => columnindex == index_class }.first())
-    //Remove the class column with filter and assign a partition to each column
+    //Remove the class column and assign a partition to each column
     transposed.filter { case (columnindex, row) => columnindex != index_class }
       .zipWithIndex.map(line => (line._2 % numParts, line._1))
       .groupByKey().map {
