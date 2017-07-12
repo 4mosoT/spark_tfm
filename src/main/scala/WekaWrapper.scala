@@ -6,7 +6,6 @@ import weka.core.{Attribute, DenseInstance, Instances}
 import weka.core.converters.ArffSaver
 
 
-
 object WekaWrapper {
 
   def createInstances(iter: Iterable[Row], categorical_attributes: Map[Int, Seq[Any]], classes: Seq[Any]): Instances = {
@@ -94,8 +93,8 @@ object WekaWrapper {
     })
 
     // Add class column
-    class_column._2.zipWithIndex.foreach{case (value, index) =>
-    data.instance(index).setValue(attributes_schema.get(attributes_schema.size - 1), value.toString)
+    class_column._2.zipWithIndex.foreach { case (value, index) =>
+      data.instance(index).setValue(attributes_schema.get(attributes_schema.size - 1), value.toString)
     }
 
     data
@@ -103,7 +102,7 @@ object WekaWrapper {
 
   }
 
-  def saveInstances(instances: Instances, file_path: String): Unit ={
+  def saveInstances(instances: Instances, file_path: String): Unit = {
 
     val saver = new ArffSaver
     saver.setInstances(instances)

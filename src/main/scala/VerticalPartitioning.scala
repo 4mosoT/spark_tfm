@@ -5,7 +5,6 @@ import weka.filters.Filter
 import weka.filters.supervised.attribute.AttributeSelection
 
 
-
 object VerticalPartitioning {
 
 
@@ -54,7 +53,7 @@ object VerticalPartitioning {
       .groupByKey().map {
       case (_, iter) =>
 
-        val data =  WekaWrapper.createInstancesFromTranspose(iter, br_attributes.value, br_class_column.value, br_classes.value)
+        val data = WekaWrapper.createInstancesFromTranspose(iter, br_attributes.value, br_class_column.value, br_classes.value)
 
         //Run Weka Filter to FS
         val filter = new AttributeSelection
