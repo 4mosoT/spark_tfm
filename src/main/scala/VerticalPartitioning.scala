@@ -20,7 +20,7 @@ object VerticalPartitioning {
     val dataframe = ss.read.option("maxColumns", "30000").csv(args(0))
 
     val input = dataframe.rdd
-    val numParts: Int = 8
+    val numParts: Int = 15
 
     val part_columns = dataframe.columns.dropRight(1).zipWithIndex.map({ case (colum_name, index) => colum_name -> index % numParts }).toMap
     val class_index = dataframe.columns.length - 1
