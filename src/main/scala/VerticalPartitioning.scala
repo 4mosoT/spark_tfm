@@ -15,40 +15,36 @@ object VerticalPartitioning {
 
     //TODO: Parse arguments
 
-    val ss = SparkSession.builder().appName("hsplit").master("local[*]").getOrCreate()
+    val ss = SparkSession.builder().appName("vsplit").master("local[*]").getOrCreate()
 
     val dataframe = ss.read.option("maxColumns", "30000").csv(args(0))
 
     val input = dataframe.rdd
     val numParts: Int = 15
 
-    val part_columns = dataframe.columns.dropRight(1).zipWithIndex.map({ case (colum_name, index) => colum_name -> index % numParts }).toMap
     val class_index = dataframe.columns.length - 1
 
-
-    //TODO: check if categorical or numeric
-    var categorical = true
+    val first_row = dataframe.first().toSeq.map(_.toString)
     val attributes = dataframe.columns.zipWithIndex.map({ case (value, index) =>
       // If categorical we need to add the distinct values it can take plus its column name
-      if (categorical) {
+      if (parseNumeric(first_row(index)).isEmpty || index == class_index) {
         index -> (Some(dataframe.select(dataframe.columns(index)).distinct().collect().toSeq.map(_.get(0)).map(_.toString)), dataframe.columns(index))
       } else {
         // If not categorical we only need column name
-        index -> (None, dataframe.columns(index))
+        index -> (None, value)
       }
     }).toMap
 
     val br_attributes = ss.sparkContext.broadcast(attributes)
-    val index_class = dataframe.columns.length - 1
-    val classes = attributes(index_class)._1.get
+    val classes = attributes(class_index)._1.get
     val br_classes = ss.sparkContext.broadcast(classes)
 
 
     val transposed = transposeRDD(input)
     // Get the class column
-    val br_class_column = ss.sparkContext.broadcast(transposed.filter { case (columnindex, row) => columnindex == index_class }.first())
+    val br_class_column = ss.sparkContext.broadcast(transposed.filter { case (columnindex, _) => columnindex == class_index }.first())
     //Remove the class column and assign a partition to each column
-    transposed.filter { case (columnindex, row) => columnindex != index_class }
+    transposed.filter { case (columnindex, _) => columnindex != class_index }
       .zipWithIndex.map(line => (line._2 % numParts, line._1))
       .groupByKey().map {
       case (_, iter) =>
@@ -77,6 +73,15 @@ object VerticalPartitioning {
     }
     columnAndRow.groupByKey.sortByKey().map { case (columnIndex, rowIterable) => (columnIndex, rowIterable.toSeq.sortBy(_._1).map(_._2)) }
 
+  }
+
+
+  def parseNumeric(s: String): Option[Double] = {
+    try {
+      Some(s.toDouble)
+    } catch {
+      case e: Exception => None
+    }
   }
 
 }

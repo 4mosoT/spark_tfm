@@ -22,7 +22,6 @@ object HorizontalPartitioning {
     val numParts: Int = 1
 
 
-    //TODO: check if categorical or numeric
     val categorical_attributes = dataframe.columns.zipWithIndex.map({ case (value, index) =>
       index -> dataframe.select(dataframe.columns(index)).distinct().collect().toSeq.map(_.get(0))
     }).toMap
