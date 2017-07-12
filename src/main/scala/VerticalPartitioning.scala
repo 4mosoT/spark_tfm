@@ -4,7 +4,7 @@ import weka.attributeSelection.{CfsSubsetEval, GreedyStepwise}
 import weka.filters.Filter
 import weka.filters.supervised.attribute.AttributeSelection
 
-import scala.collection.mutable.ArrayBuffer
+
 
 object VerticalPartitioning {
 
@@ -32,31 +32,41 @@ object VerticalPartitioning {
     val attributes = dataframe.columns.zipWithIndex.map({ case (value, index) =>
       // If categorical we need to add the distinct values it can take plus its partition index
       if (categorical) {
-        index -> Some(dataframe.select(dataframe.columns(index)).distinct().collect().toSeq.map(_.get(0)).toSeq)
+        index -> (Some(dataframe.select(dataframe.columns(index)).distinct().collect().toSeq.map(_.get(0)).map(_.toString)), dataframe.columns(index))
       } else {
         // If not categorical we only need partition index
-        index -> None
+        index -> (None, dataframe.columns(index))
       }
     }).toMap
 
     val br_attributes = ss.sparkContext.broadcast(attributes)
     val index_class = dataframe.columns.length - 1
-    val classes = attributes(index_class)
+    val classes = attributes(index_class)._1.get
     val br_classes = ss.sparkContext.broadcast(classes)
 
 
     val transposed = transposeRDD(input)
-
     // Get the class column
     val br_class_column = ss.sparkContext.broadcast(transposed.filter { case (columnindex, row) => columnindex == index_class }.first())
-
-    //Remove the class column with filter and assign a partition
+    //Remove the class column with filter and assign a partition to each column
     transposed.filter { case (columnindex, row) => columnindex != index_class }
       .zipWithIndex.map(line => (line._2 % numParts, line._1))
       .groupByKey().map {
       case (_, iter) =>
-        val data = WekaWrapper.createInstancesFromTraspose(iter, br_attributes.value, br_class_column.value, br_classes.value)
-    }
+
+        val data =  WekaWrapper.createInstancesFromTranspose(iter, br_attributes.value, br_class_column.value, br_classes.value)
+
+        //Run Weka Filter to FS
+        val filter = new AttributeSelection
+        val eval = new CfsSubsetEval
+        val search = new GreedyStepwise
+        search.setSearchBackwards(true)
+        filter.setEvaluator(eval)
+        filter.setSearch(search)
+        filter.setInputFormat(data)
+        Filter.useFilter(data, filter).toSummaryString
+
+    }.foreach(println)
 
   }
 
@@ -71,3 +81,5 @@ object VerticalPartitioning {
   }
 
 }
+
+
