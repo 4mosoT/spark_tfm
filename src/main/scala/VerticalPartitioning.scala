@@ -58,8 +58,6 @@ object VerticalPartitioning {
     }
     val byColumns = columnAndRow.groupByKey.sortByKey().values
     byColumns.map { indexedRow => indexedRow.toSeq.sortBy(_._1).map(_._2) }
-
-
   }
 
 }
