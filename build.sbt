@@ -19,4 +19,3 @@ assemblyMergeStrategy in assembly := {
 }
 
 
-spDependencies += "sramirez/spark-infotheoretic-feature-selection:1.4.0"

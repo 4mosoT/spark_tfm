@@ -3,10 +3,8 @@ import org.apache.spark.sql.{Row, SparkSession}
 import weka.attributeSelection.{CfsSubsetEval, GreedyStepwise}
 import weka.filters.Filter
 import weka.filters.supervised.attribute.AttributeSelection
-
-
+//TODO: Merge with HorizontalPartitioning
 object VerticalPartitioning {
-
 
   /** Object for vertical partition a RDD
     */
@@ -23,7 +21,6 @@ object VerticalPartitioning {
     val numParts: Int = 15
 
     val class_index = dataframe.columns.length - 1
-
     val first_row = dataframe.first().toSeq.map(_.toString)
     val attributes = dataframe.columns.zipWithIndex.map({ case (value, index) =>
       // If categorical we need to add the distinct values it can take plus its column name
