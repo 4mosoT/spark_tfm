@@ -13,8 +13,7 @@ object WekaWrapper {
     //The list of attributes to create the Weka "Instances"
     val attributes_schema = new util.ArrayList[Attribute]()
 
-    // Getting the attributes and add to schema. Since iter will only contain the columns to this partition
-    // we need to iterate over it and get the info from attributes map
+    // Getting the attributes and add to schema.
     iter.head.toSeq.dropRight(1).zipWithIndex.foreach { case (_, index) =>
       val (value, column_name) = attributes(index)
       if (value.isDefined) {
@@ -57,8 +56,7 @@ object WekaWrapper {
     val attributes_schema = new util.ArrayList[Attribute]()
 
     // Getting the attributes and add to schema. Since iter will only contain the columns to this partition
-    // we need to iterate over it and get the info from attributes map (We iterate over iterable instead over
-    // attributes, because iter contains only the columns we need, attributes get all)
+    // we need to iterate over it and get the info from attributes map
     iter.foreach { case (index, _) =>
       val (value, column_name) = attributes(index)
       if (value.isDefined) {
