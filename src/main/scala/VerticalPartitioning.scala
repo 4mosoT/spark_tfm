@@ -25,7 +25,7 @@ object VerticalPartitioning {
     val attributes = dataframe.columns.zipWithIndex.map({ case (value, index) =>
       // If categorical we need to add the distinct values it can take plus its column name
       if (parseNumeric(first_row(index)).isEmpty || index == class_index) {
-        index -> (Some(dataframe.select(dataframe.columns(index)).distinct().collect().toSeq.map(_.get(0)).map(_.toString)), dataframe.columns(index))
+        index -> (Some(dataframe.select(dataframe.columns(index)).distinct().collect().toSeq.map(_.get(0).toString)), value)
       } else {
         // If not categorical we only need column name
         index -> (None, value)
@@ -56,7 +56,7 @@ object VerticalPartitioning {
         filter.setEvaluator(eval)
         filter.setSearch(search)
         filter.setInputFormat(data)
-        Filter.useFilter(data, filter).toSummaryString
+        Filter.useFilter(data, filter)
 
     }.foreach(println)
 

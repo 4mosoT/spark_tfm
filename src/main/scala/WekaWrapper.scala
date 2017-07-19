@@ -5,6 +5,8 @@ import org.apache.spark.sql.Row
 import weka.core.{Attribute, DenseInstance, Instances}
 import weka.core.converters.ArffSaver
 
+import scala.collection.mutable
+
 
 object WekaWrapper {
 
@@ -12,6 +14,7 @@ object WekaWrapper {
 
     //The list of attributes to create the Weka "Instances"
     val attributes_schema = new util.ArrayList[Attribute]()
+
 
     // Getting the attributes and add to schema.
     iter.head.toSeq.dropRight(1).zipWithIndex.foreach { case (_, index) =>
@@ -97,6 +100,18 @@ object WekaWrapper {
     }
 
     data
+
+
+  }
+
+  def getAttributes(instances: Instances): mutable.Set[String] = {
+    val attributes = collection.mutable.Set[String]()
+    val enum_attributes = instances.enumerateAttributes()
+    while (enum_attributes.hasMoreElements) {
+      attributes += enum_attributes.nextElement().name()
+    }
+
+    attributes
 
 
   }
