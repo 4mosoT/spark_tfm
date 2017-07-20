@@ -134,7 +134,7 @@ object HorizontalPartitioning {
         }
         f_feats += sumMean / sumVar
 
-      }
+      } //TODO: 'else' for num. variables.
     }
 
     1 / f_feats.max
