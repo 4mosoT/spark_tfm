@@ -1,7 +1,9 @@
-import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.{DataFrame, Dataset, Row, SparkSession}
 import weka.attributeSelection.{CfsSubsetEval, GreedyStepwise, InfoGainAttributeEval, Ranker}
 import weka.filters.Filter
 import weka.filters.supervised.attribute.AttributeSelection
+
+import scala.collection.immutable
 
 //TODO: Merge with VerticalPartitioning
 
@@ -16,12 +18,14 @@ object HorizontalPartitioning {
 
     //TODO: Parse arguments
 
+
     val ss = SparkSession.builder().appName("hsplit").master("local[*]").getOrCreate()
 
     val dataframe = ss.read.option("maxColumns", "30000").csv(args(0))
 
     val input = dataframe.rdd
     val numParts: Int = 10
+
 
     val class_index = dataframe.columns.length - 1
     val first_row = dataframe.first().toSeq.map(_.toString)
@@ -43,43 +47,46 @@ object HorizontalPartitioning {
     val classes = attributes(class_index)._1.get
     val br_classes = ss.sparkContext.broadcast(classes)
 
+    val start_program_time = System.currentTimeMillis()
+    println(fisherRatio(dataframe, br_attributes.value))
+    println(System.currentTimeMillis() - start_program_time)
 
-    val partitioned = input.map(row => (row.get(row.length - 1), row)).groupByKey()
-      .flatMap({
-        // Add an index for each subset (keys)
-        case (_, value) => value.zipWithIndex
-      })
-      .map({
-        // Get the partition number for each row and make it the new key
-        case (row, index) => (index % numParts, row)
-      })
-
-    val votes = partitioned.groupByKey().flatMap { case (_, iter) =>
-
-      val data = WekaWrapper.createInstances(iter, br_attributes.value, br_classes.value)
-
-      //Run Weka Filter to FS
-      val filter = new AttributeSelection
-
-      val eval = new CfsSubsetEval
-      val search = new GreedyStepwise
-      search.setSearchBackwards(true)
-
-      //val eval = new InfoGainAttributeEval
-      //val search = new Ranker
-
-      filter.setEvaluator(eval)
-      filter.setSearch(search)
-      filter.setInputFormat(data)
-      val filtered_data = Filter.useFilter(data, filter)
-
-      val selected_attributes = WekaWrapper.getAttributes(filtered_data)
-      // Getting the diff we can obtain the features to increase the votes
-      (br_inverse_attributes.value.keySet.diff(selected_attributes) - br_attributes.value(class_index)._2).map((_, 1))
-
-    }.reduceByKey(_ + _).collect()
-
-    print(votes.sortBy(_._1).mkString(","))
+    //    val partitioned = input.map(row => (row.get(row.length - 1), row)).groupByKey()
+    //      .flatMap({
+    //        // Add an index for each subset (keys)
+    //        case (_, value) => value.zipWithIndex
+    //      })
+    //      .map({
+    //        // Get the partition number for each row and make it the new key
+    //        case (row, index) => (index % numParts, row)
+    //      })
+    //
+    //    val votes = partitioned.groupByKey().flatMap { case (_, iter) =>
+    //
+    //      val data = WekaWrapper.createInstances(iter, br_attributes.value, br_classes.value)
+    //
+    //      //Run Weka Filter to FS
+    //      val filter = new AttributeSelection
+    //
+    //      val eval = new CfsSubsetEval
+    //      val search = new GreedyStepwise
+    //      search.setSearchBackwards(true)
+    //
+    //      //val eval = new InfoGainAttributeEval
+    //      //val search = new Ranker
+    //
+    //      filter.setEvaluator(eval)
+    //      filter.setSearch(search)
+    //      filter.setInputFormat(data)
+    //      val filtered_data = Filter.useFilter(data, filter)
+    //
+    //      val selected_attributes = WekaWrapper.getAttributes(filtered_data)
+    //      // Getting the diff we can obtain the features to increase the votes
+    //      (br_inverse_attributes.value.keySet.diff(selected_attributes) - br_attributes.value(class_index)._2).map((_, 1))
+    //
+    //    }.reduceByKey(_ + _).collect()
+    //
+    //    print(votes.sortBy(_._1).mkString(","))
 
   }
 
@@ -92,5 +99,46 @@ object HorizontalPartitioning {
     }
   }
 
+  def fisherRatio(dataframe: DataFrame, attributes: Map[Int, (Option[Seq[String]], String)]): Double = {
 
+    // ProportionclassMap => Class -> Proportion of class
+    val samples = dataframe.count().toDouble
+    val proportionClassMap = dataframe.groupBy(dataframe.columns.last).count().collect().map(row => row(0) -> (row(1).asInstanceOf[Long] / samples.toDouble)).toMap
+    val f_feats = collection.mutable.ArrayBuffer.empty[Double]
+
+    dataframe.columns.dropRight(1).zipWithIndex.foreach { case (column_name, index) =>
+      var sumMean: Double = 0
+      var sumVar: Double = 0
+
+      if (attributes(index)._1.isDefined) {
+        //If we have categorical values we need to discretize them.
+        // We use zipWithIndex where its index is its discretize value.
+        val values = attributes(index)._1.get.zipWithIndex.map { case (value, index) => value -> (index + 1) }.toMap
+
+        proportionClassMap.keySet.foreach { _class_ =>
+
+          val mean_class = dataframe.filter(dataframe(dataframe.columns.last).equalTo(_class_))
+            .select(column_name).groupBy(column_name).count().rdd.map(row => values(row.get(0).toString) * row.get(1).asInstanceOf[Long]).reduce(_ + _) / samples.toDouble
+
+          proportionClassMap.keySet.foreach { sub_class_ =>
+
+            if (sub_class_ != _class_) {
+              val mean_sub_class = dataframe.filter(dataframe(dataframe.columns.last).equalTo(sub_class_))
+                .select(column_name).groupBy(column_name).count().rdd.map(row => values(row.get(0).toString) * row.get(1).asInstanceOf[Long]).reduce(_ + _) / samples.toDouble
+
+              sumMean += scala.math.pow(mean_class - mean_sub_class, 2) * proportionClassMap(_class_) * proportionClassMap(sub_class_)
+            }
+          }
+          val variance = dataframe.filter(dataframe(dataframe.columns.last).equalTo(_class_))
+            .select(column_name).rdd.map(row => math.pow(values(row.get(0).toString) - mean_class, 2)).reduce(_ + _) / samples.toDouble
+          sumVar += variance * proportionClassMap(_class_)
+        }
+        f_feats += sumMean / sumVar
+
+      } //TODO: 'else' for num. variables.
+    }
+
+    1 / f_feats.max
+
+  }
 }
