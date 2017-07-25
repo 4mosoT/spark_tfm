@@ -27,66 +27,97 @@ object HorizontalPartitioning {
     val input = dataframe.rdd
     val numParts: Int = 10
 
+    /**
+      * Creation of attributes maps
+      */
 
     val class_index = dataframe.columns.length - 1
     val first_row = dataframe.first().toSeq.map(_.toString)
-    val inverse_attributes = collection.mutable.Map[String, Int]()
-    val attributes = dataframe.columns.zipWithIndex.map({ case (value, index) =>
+    val inverse_attributes_ = collection.mutable.Map[String, Int]()
+    val attributes = dataframe.columns.zipWithIndex.map({ case (column_name, index) =>
       // If categorical we need to add the distinct values it can take plus its column name
       if (parseNumeric(first_row(index)).isEmpty || index == class_index) {
-        inverse_attributes += value -> index
-        index -> (Some(dataframe.select(dataframe.columns(index)).distinct().collect().toSeq.map(_.get(0).toString)), value)
+        inverse_attributes_ += column_name -> index
+        index -> (Some(dataframe.select(dataframe.columns(index)).distinct().collect().toSeq.map(_.get(0).toString)), column_name)
       } else {
         // If not categorical we only need column name
-        inverse_attributes += value -> index
-        index -> (None, value)
+        inverse_attributes_ += column_name -> index
+        index -> (None, column_name)
       }
     }).toMap
 
+    val inverse_attributes = inverse_attributes_.toMap
     val br_inverse_attributes = ss.sparkContext.broadcast(inverse_attributes)
     val br_attributes = ss.sparkContext.broadcast(attributes)
-    val classes = attributes(class_index)._1.get
-    val br_classes = ss.sparkContext.broadcast(classes)
 
-    val start_program_time = System.currentTimeMillis()
-    println(fisherRatio(dataframe, br_attributes.value, ss.sparkContext))
-    println(System.currentTimeMillis() - start_program_time)
 
-    //    val partitioned = input.map(row => (row.get(row.length - 1), row)).groupByKey()
-    //      .flatMap({
-    //        // Add an index for each subset (keys)
-    //        case (_, value) => value.zipWithIndex
-    //      })
-    //      .map({
-    //        // Get the partition number for each row and make it the new key
-    //        case (row, index) => (index % numParts, row)
-    //      })
-    //
-    //    val votes = partitioned.groupByKey().flatMap { case (_, iter) =>
-    //
-    //      val data = WekaWrapper.createInstances(iter, br_attributes.value, br_classes.value)
-    //
-    //      //Run Weka Filter to FS
-    //      val filter = new AttributeSelection
-    //
-    //      val eval = new CfsSubsetEval
-    //      val search = new GreedyStepwise
-    //      search.setSearchBackwards(true)
-    //
-    //      //val eval = new InfoGainAttributeEval
-    //      //val search = new Ranker
-    //
-    //      filter.setEvaluator(eval)
-    //      filter.setSearch(search)
-    //      filter.setInputFormat(data)
-    //      val filtered_data = Filter.useFilter(data, filter)
-    //
-    //      val selected_attributes = WekaWrapper.getAttributes(filtered_data)
-    //      // Getting the diff we can obtain the features to increase the votes
-    //      (br_inverse_attributes.value.keySet.diff(selected_attributes) - br_attributes.value(class_index)._2).map((_, 1))
-    //
-    //    }.reduceByKey(_ + _).collect()
-    //
+    //    val start_program_time = System.currentTimeMillis()
+    //    println(fisherRatio(dataframe, br_attributes.value, ss.sparkContext))
+    //    println(System.currentTimeMillis() - start_program_time)
+
+    /**
+      * Getting the Votes vector.
+      */
+
+    val partitioned = input.map(row => (row.get(row.length - 1), row)).groupByKey()
+      .flatMap({
+        // Add an index for each subset (keys)
+        case (_, value) => value.zipWithIndex
+      })
+      .map({
+        // Get the partition number for each row and make it the new key
+        case (row, index) => (index % numParts, row)
+      })
+
+    val votes = partitioned.groupByKey().flatMap { case (_, iter) =>
+
+      val data = WekaWrapper.createInstances(iter, br_attributes.value, class_index)
+
+      //Run Weka Filter to FS
+      val filter = new AttributeSelection
+
+      val eval = new CfsSubsetEval
+      val search = new GreedyStepwise
+      search.setSearchBackwards(true)
+
+      //val eval = new InfoGainAttributeEval
+      //val search = new Ranker
+
+      filter.setEvaluator(eval)
+      filter.setSearch(search)
+      filter.setInputFormat(data)
+      val filtered_data = Filter.useFilter(data, filter)
+
+      val selected_attributes = WekaWrapper.getAttributes(filtered_data)
+      // Getting the diff we can obtain the features to increase the votes and taking away the class
+      (br_inverse_attributes.value.keySet.diff(selected_attributes) - br_attributes.value(class_index)._2).map((_, 1))
+
+    }.reduceByKey(_ + _).collect()
+
+    /**
+      * Computing 'Selection Features Threshold'
+      */
+
+    val avg_votes = votes.map(_._2).sum.toDouble / votes.length
+    val std_votes = math.sqrt(votes.map(votes => math.pow(votes._2 - avg_votes, 2)).sum / votes.length)
+    val minVote = (avg_votes - (std_votes / 2)).toInt
+    val maxVote = (avg_votes + (std_votes / 2)).toInt
+
+    //We get the features that aren't in the votes set. That means features -> Votes = 0
+    val selected_features_0_votes = inverse_attributes.keySet.diff(votes.map(_._1).toSet)
+
+    for (a <- minVote to maxVote by 5) {
+      // We add votes below Threshold value
+      val selected_features = (selected_features_0_votes ++ votes.filter(_._2 < a).map(_._1)).toSeq
+      val selected_inverse_features_map = inverse_attributes.filterKeys(selected_features.contains(_))
+      val selected_features_map = attributes.filterKeys(selected_inverse_features_map.values.toSeq.contains(_))
+      val df = dataframe.select(selected_features.head, selected_features.tail: _*)
+      println(WekaWrapper.createInstances(df, selected_features_map, selected_inverse_features_map, class_index).toSummaryString)
+
+    }
+
+
+    //    println(avg_votes, std_votes, minVote, maxVote)
     //    print(votes.sortBy(_._1).mkString(","))
 
   }
@@ -95,7 +126,7 @@ object HorizontalPartitioning {
     try {
       Some(s.toDouble)
     } catch {
-      case e: Exception => None
+      case _: Exception => None
 
     }
   }
