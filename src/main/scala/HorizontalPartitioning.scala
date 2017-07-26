@@ -1,4 +1,8 @@
 import org.apache.spark.SparkContext
+import org.apache.spark.ml.Pipeline
+import org.apache.spark.ml.classification.{DecisionTreeClassifier, NaiveBayes}
+import org.apache.spark.ml.evaluation.MulticlassClassificationEvaluator
+import org.apache.spark.ml.feature.{OneHotEncoder, StringIndexer, VectorAssembler}
 import org.apache.spark.sql.{DataFrame, Dataset, Row, SparkSession}
 import weka.attributeSelection.{CfsSubsetEval, GreedyStepwise, InfoGainAttributeEval, Ranker}
 import weka.filters.Filter
@@ -6,6 +10,7 @@ import weka.filters.supervised.attribute.AttributeSelection
 
 import scala.collection.immutable
 
+//https://github.com/saurfang/spark-knn
 //TODO: Merge with VerticalPartitioning
 
 object HorizontalPartitioning {
@@ -24,17 +29,17 @@ object HorizontalPartitioning {
 
     val dataframe = ss.read.option("maxColumns", "30000").csv(args(0))
 
-    val input = dataframe.rdd
+     val input = dataframe.rdd
     val numParts: Int = 10
 
     /**
       * Creation of attributes maps
       */
-
     val class_index = dataframe.columns.length - 1
     val first_row = dataframe.first().toSeq.map(_.toString)
     val inverse_attributes_ = collection.mutable.Map[String, Int]()
-    val attributes = dataframe.columns.zipWithIndex.map({ case (column_name, index) =>
+    val attributes = dataframe.columns.zipWithIndex.map({
+      case ( column_name, index) =>
       // If categorical we need to add the distinct values it can take plus its column name
       if (parseNumeric(first_row(index)).isEmpty || index == class_index) {
         inverse_attributes_ += column_name -> index
@@ -45,6 +50,7 @@ object HorizontalPartitioning {
         index -> (None, column_name)
       }
     }).toMap
+
 
     val inverse_attributes = inverse_attributes_.toMap
     val br_inverse_attributes = ss.sparkContext.broadcast(inverse_attributes)
@@ -109,16 +115,48 @@ object HorizontalPartitioning {
     for (a <- minVote to maxVote by 5) {
       // We add votes below Threshold value
       val selected_features = (selected_features_0_votes ++ votes.filter(_._2 < a).map(_._1)).toSeq
-      val selected_inverse_features_map = inverse_attributes.filterKeys(selected_features.contains(_))
-      val selected_features_map = attributes.filterKeys(selected_inverse_features_map.values.toSeq.contains(_))
       val df = dataframe.select(selected_features.head, selected_features.tail: _*)
-      println(WekaWrapper.createInstances(df, selected_features_map, selected_inverse_features_map, class_index).toSummaryString)
+
+      // We need to transform categorical data to one_hot to work with MLlib
+      //Creation of pipeline
+      var pipeline: Array[org.apache.spark.ml.PipelineStage] = Array()
+      var columns_to_assemble: Array[String] = Array()
+      df.columns.filter {
+        cname =>
+          val original_attr_index = inverse_attributes(cname)
+          attributes(original_attr_index)._1.isDefined && original_attr_index != class_index
+      }.foreach {
+        cname =>
+          val st_indexer = new StringIndexer().setInputCol(cname).setOutputCol(s"${cname}_index")
+          pipeline = pipeline :+ st_indexer
+          pipeline = pipeline :+ new OneHotEncoder().setInputCol(st_indexer.getOutputCol).setOutputCol(s"${cname}_vect")
+          columns_to_assemble = columns_to_assemble :+ s"${cname}_vect"
+      }
+
+      //Transform class column from categorical to index
+      pipeline = pipeline :+ new StringIndexer().setInputCol(attributes(class_index)._2).setOutputCol("label")
+      pipeline = pipeline :+  new  VectorAssembler().setInputCols(columns_to_assemble).setOutputCol("features")
+
+      val df_one_hot = new Pipeline().setStages(pipeline :+ new DecisionTreeClassifier()).fit(df).transform(df)
+      df_one_hot.show(
+
+      )
+      val evaluator = new MulticlassClassificationEvaluator()
+        .setLabelCol("label")
+        .setPredictionCol("prediction")
+        .setMetricName("precision")
+      val accuracy = evaluator.evaluate(df_one_hot)
+      println("Test Error = " + (1.0 - accuracy))
+
+
 
     }
 
 
-    //    println(avg_votes, std_votes, minVote, maxVote)
-    //    print(votes.sortBy(_._1).mkString(","))
+    //      #For use with Weka library
+    //      val selected_inverse_features_map = inverse_attributes.filterKeys(selected_features.contains(_))
+    //      val selected_features_map = attributes.filterKeys(selected_inverse_features_map.values.toSeq.contains(_))
+    //      WekaWrapper.createInstances(df, selected_features_map, selected_inverse_features_map, class_index)
 
   }
 
