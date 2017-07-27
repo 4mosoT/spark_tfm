@@ -116,7 +116,7 @@ object HorizontalPartitioning {
 
     val start = System.currentTimeMillis()
 
-    //It can be distributed
+    //It can be distributed ****TESTING****
 //    val dataframe_2 = ss.sparkContext.broadcast(dataframe)
 //    val r = minVote to maxVote by 1
 //    val selected_threshold = ss.sparkContext.parallelize(r).map{ a =>
