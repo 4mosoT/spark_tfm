@@ -1,15 +1,18 @@
 import org.apache.spark.SparkContext
 import org.apache.spark.ml.{Pipeline, PipelineStage}
-import org.apache.spark.ml.classification.{LinearSVC, OneVsRest, KNNClassifier}
+import org.apache.spark.ml.classification.{KNNClassifier, LinearSVC, OneVsRest}
 import org.apache.spark.ml.evaluation.MulticlassClassificationEvaluator
 import org.apache.spark.ml.feature.{OneHotEncoder, StringIndexer, VectorAssembler}
 import org.apache.spark.sql.{DataFrame, Dataset, Row, SparkSession}
+import org.rogach.scallop.{ScallopConf, ScallopOption}
 import weka.attributeSelection.{CfsSubsetEval, GreedyStepwise, InfoGainAttributeEval, Ranker}
 import weka.filters.Filter
 import weka.filters.supervised.attribute.AttributeSelection
 
 
 //TODO: Merge with VerticalPartitioning
+
+
 
 object HorizontalPartitioning {
 
@@ -20,15 +23,23 @@ object HorizontalPartitioning {
 
   def main(args: Array[String]): Unit = {
 
-    //TODO: Parse arguments
+    val opts = new ScallopConf(args) {
+      banner("Use of this program")
+      val dataset: ScallopOption[String] = opt[String]("dataset", required = true, descr = "Dataset to use in CSV format / Class must be last column")
+      val partType: ScallopOption[Boolean] = toggle("vertical", default = Some(false), descrYes = "Vertical partitioning / Default Horizontal")
+      val numParts = opt[Int]("partitions", validate = 0<, descr = "Num of partitions", required = true)
+      verify()
+    }
+
+    val dataset_file = opts.dataset()
+    val numParts = opts.numParts()
 
 
     val ss = SparkSession.builder().appName("hsplit").master("local[*]").getOrCreate()
 
-    val dataframe = ss.read.option("maxColumns", "30000").csv(args(0))
+    val dataframe = ss.read.option("maxColumns", "30000").csv(dataset_file)
 
     val input = dataframe.rdd
-    val numParts: Int = 10
 
     /** *****************************
       * Creation of attributes maps
@@ -112,7 +123,7 @@ object HorizontalPartitioning {
     val selected_features_0_votes = inverse_attributes.keySet.diff(votes.map(_._1).toSet)
 
     val alpha = 0.75
-    var classification_errors = collection.mutable.ArrayBuffer[(Int, Double)]()
+    var e_v = collection.mutable.ArrayBuffer[(Int, Double)]()
 
     for (a <- minVote to maxVote by 1) {
       // We add votes below Threshold value
@@ -124,15 +135,16 @@ object HorizontalPartitioning {
       val classifier = new LinearSVC()
       val ovsr = new OneVsRest().setClassifier(classifier)
       val error = classification_error(selected_features_dataframe, attributes, inverse_attributes, class_index, ovsr)
-      classification_errors +=
+
+      e_v +=
         ((a, alpha * error + (1 - alpha) * retained_feat))
 
     }
 
 
-    val selected_threshold = classification_errors.minBy(_._2)._1
+    val selected_threshold = e_v.minBy(_._2)._1
     val selected_features_threshold = (selected_features_0_votes ++ votes.filter(_._2 < selected_threshold).map(_._1)) - attributes(class_index)._2
-    print(selected_features_threshold)
+    println(selected_features_threshold)
 
 
     //      #For use with Weka library
@@ -283,4 +295,11 @@ object HorizontalPartitioning {
     1 / f_feats.max
 
   }
+
+
+
+
 }
+
+
+

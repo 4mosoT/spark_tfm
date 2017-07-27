@@ -1,4 +1,4 @@
-name := "spark_test"
+name := "spark_feature_selection"
 
 version := "1.0"
 
@@ -17,6 +17,7 @@ resolvers += "Spark Packages Repo" at "http://dl.bintray.com/spark-packages/mave
 
 libraryDependencies += "saurfang" % "spark-knn" % "0.2.0"
 
+libraryDependencies += "org.rogach" %% "scallop" % "3.0.3"
 
 assemblyMergeStrategy in assembly := {
   case PathList("META-INF", xs @ _*) => MergeStrategy.discard
