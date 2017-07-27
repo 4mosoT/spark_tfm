@@ -23,17 +23,20 @@ object HorizontalPartitioning {
   def main(args: Array[String]): Unit = {
 
     //Argument parser
+    //TODO: Parse feature selection algorithm
     val opts = new ScallopConf(args) {
-      banner("Usage of this program: -d file -p number_of_partitions -v true_if_vertical_partition measure (classifier -m classifier | -o another classifier)")
+      banner("\nUsage of this program: -d file -p number_of_partitions -v true_if_vertical_partition(default = false) measure (classifier -m classifier | -o another classifier) \n\n" +
+        "Examples:  -d connect-4.data -p 10 measure classifier -m SVM \n\t\t   -d connect-4.data -p 10 measure -o F1 \n"
+      )
       val dataset: ScallopOption[String] = opt[String]("dataset", required = true, descr = "Dataset to use in CSV format / Class must be last column")
       val partType: ScallopOption[Boolean] = toggle("vertical", default = Some(false), descrYes = "Vertical partitioning / Default Horizontal")
       val numParts = opt[Int]("partitions", validate = 0 <, descr = "Num of partitions", required = true)
       val compMeasure = new Subcommand("measure") {
         val classifier = new Subcommand("classifier") {
-          val model = opt[String]("model", descr = "Classifier SVM, Knn, C4.5, NaiveBayes (NB)")
+          val model = opt[String]("model", descr = "Available Classifiers:  SVM, Knn, C4.5, NaiveBayes (NB)")
         }
         addSubcommand(classifier)
-        val other = opt[String]("other", descr = "F1")
+        val other = opt[String]("other", descr = "Metrics available: F1")
 
       }
       addSubcommand(compMeasure)
