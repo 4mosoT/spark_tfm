@@ -114,13 +114,6 @@ object HorizontalPartitioning {
     val alpha = 0.75
     var classification_errors = collection.mutable.ArrayBuffer[(Int, Double)]()
 
-    val start = System.currentTimeMillis()
-
-    //It can be distributed ****TESTING****
-//    val dataframe_2 = ss.sparkContext.broadcast(dataframe)
-//    val r = minVote to maxVote by 1
-//    val selected_threshold = ss.sparkContext.parallelize(r).map{ a =>
-
     for (a <- minVote to maxVote by 1) {
       // We add votes below Threshold value
       val selected_features = (selected_features_0_votes ++ votes.filter(_._2 < a).map(_._1)).toSeq
@@ -135,14 +128,11 @@ object HorizontalPartitioning {
         ((a, alpha * error + (1 - alpha) * retained_feat))
 
     }
-//  .min()(new Ordering[(Int, Double)](){
-//      override def compare(x: (Int, Double), y: (Int, Double)): Int = Ordering[Double].compare(x._2, y._2)
-//      })._1
+
 
     val selected_threshold = classification_errors.minBy(_._2)._1
     val selected_features_threshold = (selected_features_0_votes ++ votes.filter(_._2 < selected_threshold).map(_._1)) - attributes(class_index)._2
     print(selected_features_threshold)
-    println(System.currentTimeMillis() - start)
 
 
     //      #For use with Weka library
