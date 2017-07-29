@@ -1,6 +1,6 @@
 import org.apache.spark.SparkContext
-import org.apache.spark.ml.{Pipeline, PipelineStage}
 import org.apache.spark.ml.classification._
+import org.apache.spark.ml.{Pipeline, PipelineStage}
 import org.apache.spark.ml.evaluation.MulticlassClassificationEvaluator
 import org.apache.spark.ml.feature.{OneHotEncoder, StringIndexer, VectorAssembler}
 import org.apache.spark.sql.{DataFrame, Dataset, Row, SparkSession}
@@ -30,22 +30,50 @@ object HorizontalPartitioning {
       )
       val dataset: ScallopOption[String] = opt[String]("dataset", required = true, descr = "Dataset to use in CSV format / Class must be last column")
       val partType: ScallopOption[Boolean] = toggle("vertical", default = Some(false), descrYes = "Vertical partitioning / Default Horizontal")
-      val numParts = opt[Int]("partitions", validate = 0 <, descr = "Num of partitions", required = true)
+      val numParts: ScallopOption[Int] = opt[Int]("partitions", validate = 0 <, descr = "Num of partitions", required = true)
       val compMeasure = new Subcommand("measure") {
         val classifier = new Subcommand("classifier") {
-          val model = opt[String]("model", descr = "Available Classifiers:  SVM, Knn, C4.5, NaiveBayes (NB)")
+          val model: ScallopOption[String] = opt[String]("model", descr = "Available Classifiers:  SVM, Knn, C4.5, NaiveBayes (NB)")
         }
         addSubcommand(classifier)
-        val other = opt[String]("other", descr = "Metrics available: F1")
+        val other: ScallopOption[String] = opt[String]("other", descr = "Available Metrics: F1")
 
       }
       addSubcommand(compMeasure)
-      val alpha = opt[Double]("alpha", descr = "Aplha Value for threshold computation / Default 0.75", validate = x => 0 <= x && x <= 1, default = Some(0.75))
+      val alpha: ScallopOption[Double] = opt[Double]("alpha", descr = "Aplha Value for threshold computation / Default 0.75", validate = x => 0 <= x && x <= 1, default = Some(0.75))
       verify()
     }
 
-    val dataset_file = opts.dataset()
-    val numParts = opts.numParts()
+
+    val globalCompyMeasure = opts.compMeasure.other.getOrElse("None") match {
+      case "F1" => fisherRatio _
+      case _ => zeroGlobal _
+    }
+
+
+    val classifier = opts.compMeasure.classifier.model.getOrElse("None") match {
+      case "SVM" =>
+        Some(new OneVsRest().setClassifier(new LinearSVC()))
+      case "KNN" =>
+        Some(new KNNClassifier().setK(1))
+      case "C4.5" =>
+        Some(new DecisionTreeClassifier())
+      case "NB" =>
+        Some(new NaiveBayes())
+      case _ =>
+        None
+    }
+
+    val selected_features = select_features(opts.dataset(), opts.numParts(), opts.alpha(), globalCompyMeasure, classifier)
+
+    println(selected_features)
+
+
+  }
+
+  def select_features(dataset_file: String, numParts: Int, alpha_value: Double,
+                      globalComplexityMeasure: (DataFrame, Map[Int, (Option[Seq[String]], String)], SparkContext) => Double,
+                      classifier: Option[PipelineStage]): Set[String] = {
 
 
     val ss = SparkSession.builder().appName("hsplit").master("local[*]").getOrCreate()
@@ -131,23 +159,11 @@ object HorizontalPartitioning {
     // **Class column included**
     val selected_features_0_votes = inverse_attributes.keySet.diff(votes.map(_._1).toSet)
 
-    val alpha = opts.alpha()
+    val alpha = alpha_value
     var e_v = collection.mutable.ArrayBuffer[(Int, Double)]()
 
-    var compMeasure = if (opts.compMeasure.other.isDefined) opts.compMeasure.other() match {
-      case "F1" => fisherRatio(dataframe, br_attributes.value, ss.sparkContext)
-    } else 0.0
+    var compMeasure = globalComplexityMeasure(dataframe, br_attributes.value, ss.sparkContext)
 
-    val classifier = if (opts.compMeasure.classifier.model.isDefined) opts.compMeasure.classifier.model() match {
-      case "SVM" =>
-        new OneVsRest().setClassifier(new LinearSVC())
-      case "KNN" =>
-        new KNNClassifier().setK(1)
-      case "C4.5" =>
-        new DecisionTreeClassifier()
-      case "NB" =>
-        new NaiveBayes()
-    } else new NaiveBayes()
 
     for (a <- minVote to maxVote by 1) {
       // We add votes below Threshold value
@@ -155,8 +171,8 @@ object HorizontalPartitioning {
       val selected_features_dataframe = dataframe.select(selected_features.head, selected_features.tail: _*)
       val retained_feat_percent = (selected_features.length.toDouble / dataframe.columns.length) * 100
 
-      if (opts.compMeasure.classifier.model.isDefined)
-        compMeasure = classification_error(selected_features_dataframe, attributes, inverse_attributes, class_index, classifier)
+      if (classifier.isDefined)
+        compMeasure = classification_error(selected_features_dataframe, attributes, inverse_attributes, class_index, classifier.get)
 
 
       e_v += ((a, alpha * compMeasure + (1 - alpha) * retained_feat_percent))
@@ -165,8 +181,7 @@ object HorizontalPartitioning {
 
 
     val selected_threshold = e_v.minBy(_._2)._1
-    val selected_features_threshold = (selected_features_0_votes ++ votes.filter(_._2 < selected_threshold).map(_._1)) - attributes(class_index)._2
-    println(selected_features_threshold)
+    (selected_features_0_votes ++ votes.filter(_._2 < selected_threshold).map(_._1)) - attributes(class_index)._2
 
 
     //      #For use with Weka library
@@ -244,6 +259,9 @@ object HorizontalPartitioning {
 
   }
 
+  def zeroGlobal(dataframe: DataFrame, attributes: Map[Int, (Option[Seq[String]], String)], sc: SparkContext): Double = {
+    0.0
+  }
 
   def fisherRatio(dataframe: DataFrame, attributes: Map[Int, (Option[Seq[String]], String)], sc: SparkContext): Double = {
 
