@@ -14,10 +14,6 @@ import weka.filters.supervised.attribute.AttributeSelection
 object DistributedFeatureSelection {
 
 
-  /** Object for horizontally partition a RDD while maintain the
-    * classes distribution
-    */
-
   def main(args: Array[String]): Unit = {
 
     //Argument parser
@@ -160,6 +156,9 @@ object DistributedFeatureSelection {
   def horizontal_partitioning(sc: SparkContext, input: RDD[Row],
                               attributes: Map[Int, (Option[Seq[String]], String)], inverse_attributes: Map[String, Int],
                               class_index: Int, numParts: Int): Array[(String, Int)] = {
+
+    /** Horizontally partition selection features*/
+
     println("***Using horizontal partitioning***")
     val br_attributes = sc.broadcast(attributes)
     val br_inverse_attributes = sc.broadcast(inverse_attributes)
@@ -204,6 +203,11 @@ object DistributedFeatureSelection {
   def vertical_partitioning(sc: SparkContext, input: RDD[Row],
                             attributes: Map[Int, (Option[Seq[String]], String)], inverse_attributes: Map[String, Int],
                             class_index: Int, numParts: Int): Array[(String, Int)] = {
+
+    //TODO: Overlap
+
+    /** Vertically partition selection features*/
+
     println("***Using vertical partitioning***")
     val br_attributes = sc.broadcast(attributes)
     val br_inverse_attributes = sc.broadcast(inverse_attributes)
