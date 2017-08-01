@@ -134,7 +134,7 @@ object DistributedFeatureSelection {
       // We add votes below Threshold value
       val selected_features = (selected_features_0_votes ++ votes.filter(_._2 < a).map(_._1)).toSeq
       println(s"Starting threshold computation with minVotes = ${a} with selected features ${selected_features.mkString(",")}")
-      if (selected_features.length < 2) {
+      if (selected_features.length > 1) {
         val selected_features_dataframe = dataframe.select(selected_features.head, selected_features.tail: _*)
         val retained_feat_percent = (selected_features.length.toDouble / dataframe.columns.length) * 100
         if (classifier.isDefined)
