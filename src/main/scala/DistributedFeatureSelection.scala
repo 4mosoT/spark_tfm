@@ -101,6 +101,7 @@ object DistributedFeatureSelection {
     /** **************************
       * Getting the Votes vector.
       * **************************/
+
     val rounds = 5
     val start_time = System.currentTimeMillis()
 
@@ -140,14 +141,16 @@ object DistributedFeatureSelection {
     val alpha = alpha_value
     var e_v = collection.mutable.ArrayBuffer[(Int, Double)]()
 
+    val start_fisher = System.currentTimeMillis()
     var compMeasure = globalComplexityMeasure(dataframe, attributes, ss.sparkContext)
+    print(s"Complexity Measure Computation Time: ${System.currentTimeMillis() - start_fisher}")
 
     val step = if (vertical_part) 1 else 5
     for (a <- minVote to maxVote by step) {
       val starting_time = System.currentTimeMillis()
       // We add votes below Threshold value
       val selected_features = (selected_features_0_votes ++ votes.filter(_._2 < a).map(_._1)).toSeq
-      println(s"Starting threshold computation with minVotes = ${a} with selected features ${selected_features.mkString(",")}")
+      println(s"Starting threshold computation with minVotes = $a with selected features ${selected_features.mkString(",")}")
       if (selected_features.length > 1) {
         val selected_features_dataframe = dataframe.select(selected_features.head, selected_features.tail: _*)
         val retained_feat_percent = (selected_features.length.toDouble / dataframe.columns.length) * 100
@@ -404,7 +407,7 @@ object DistributedFeatureSelection {
       if (attributes(index)._1.isDefined) {
         //If we have categorical values we need to discretize them.
         // We use zipWithIndex where its index is its discretize value.
-        val br_values = sc.broadcast(attributes(index)._1.get.zipWithIndex.map { case (value, index) => value -> (index + 1) }.toMap)
+        val br_values = sc.broadcast(attributes(index)._1.get.zipWithIndex.map { case (value, sub_index) => value -> (sub_index + 1) }.toMap)
 
         br_proportionClassMap.value.keySet.foreach { _class_ =>
 
