@@ -4,7 +4,7 @@ import org.apache.spark.ml.{Pipeline, PipelineStage}
 import org.apache.spark.ml.evaluation.MulticlassClassificationEvaluator
 import org.apache.spark.ml.feature.{OneHotEncoder, StringIndexer, VectorAssembler}
 import org.apache.spark.rdd.RDD
-import org.apache.spark.sql.{DataFrame, Dataset, Row, SparkSession}
+import org.apache.spark.sql.{DataFrame, Row, SparkSession}
 import org.rogach.scallop.{ScallopConf, ScallopOption, Subcommand}
 import weka.attributeSelection.{CfsSubsetEval, GreedyStepwise, InfoGainAttributeEval, Ranker}
 import weka.filters.Filter
@@ -15,7 +15,6 @@ object DistributedFeatureSelection {
 
 
   def main(args: Array[String]): Unit = {
-
     //Argument parser
     //TODO: Parse weka feature selection algorithm
     val opts = new ScallopConf(args) {
@@ -27,7 +26,7 @@ object DistributedFeatureSelection {
       val numParts: ScallopOption[Int] = opt[Int]("partitions", validate = 0 <, descr = "Num of partitions", required = true)
       val compMeasure = new Subcommand("measure") {
         val classifier = new Subcommand("classifier") {
-          val model: ScallopOption[String] = opt[String]("model", descr = "Available Classifiers:  SVM, Knn, C4.5, NaiveBayes (NB)")
+          val model: ScallopOption[String] = opt[String]("model", descr = "Available Classifiers:  SVM, Knn, Decision Tree (DT), NaiveBayes (NB)")
         }
         addSubcommand(classifier)
         val other: ScallopOption[String] = opt[String]("other", descr = "Available Metrics: F1")
@@ -37,7 +36,6 @@ object DistributedFeatureSelection {
       val alpha: ScallopOption[Double] = opt[Double]("alpha", descr = "Aplha Value for threshold computation / Default 0.75", validate = x => 0 <= x && x <= 1, default = Some(0.75))
       verify()
     }
-
 
     val globalCompyMeasure = opts.compMeasure.other.getOrElse("None") match {
       case "F1" => fisherRatio _
@@ -50,7 +48,7 @@ object DistributedFeatureSelection {
         Some(new OneVsRest().setClassifier(new LinearSVC()))
       case "KNN" =>
         Some(new KNNClassifier().setK(1))
-      case "C4.5" =>
+      case "DT" =>
         Some(new DecisionTreeClassifier())
       case "NB" =>
         Some(new NaiveBayes())
@@ -73,6 +71,7 @@ object DistributedFeatureSelection {
     val ss = SparkSession.builder().appName("hsplit").master("local[*]").getOrCreate()
     ss.sparkContext.setLogLevel("ERROR")
     val dataframe = ss.read.option("maxColumns", "30000").csv(dataset_file)
+
 
     val input = dataframe.rdd
 
@@ -103,19 +102,24 @@ object DistributedFeatureSelection {
       * Getting the Votes vector.
       * **************************/
 
-    val votes = if (vertical_part) vertical_partitioning(ss.sparkContext, input, attributes, inverse_attributes, class_index, numParts)
-    else horizontal_partitioning(ss.sparkContext, input, attributes, inverse_attributes, class_index, numParts)
+    val start_time = System.currentTimeMillis()
+    val votes = if (vertical_part) vertical_partitioning_feature_selection(ss.sparkContext, input, attributes, inverse_attributes, class_index, numParts)
+    else horizontal_partitioning_feature_selection(ss.sparkContext, input, attributes, inverse_attributes, class_index, numParts)
+    println(s"Total time:${System.currentTimeMillis() - start_time}")
 
     /** ******************************************
       * Computing 'Selection Features Threshold'
       * ******************************************/
+
     val avg_votes = votes.map(_._2).sum.toDouble / votes.length
     val std_votes = math.sqrt(votes.map(votes => math.pow(votes._2 - avg_votes, 2)).sum / votes.length)
-    val minVote =  if (vertical_part) votes.minBy(_._2)._2 + 1 else {(avg_votes - (std_votes / 2)).toInt}
-    val maxVote = if (vertical_part) numParts + 1  else (avg_votes + (std_votes / 2)).toInt
+    val minVote = if (vertical_part) 1 else {
+      (avg_votes - (std_votes / 2)).toInt
+    }
+    val maxVote = if (vertical_part) numParts / 2 else (avg_votes + (std_votes / 2)).toInt
 
     //We get the features that aren't in the votes set. That means features -> Votes = 0
-    // **Class column included**
+    // ****Class column included****
     val selected_features_0_votes = inverse_attributes.keySet.diff(votes.map(_._1).toSet)
 
     val alpha = alpha_value
@@ -125,16 +129,20 @@ object DistributedFeatureSelection {
 
     val step = if (vertical_part) 1 else 5
     for (a <- minVote to maxVote by step) {
+
+      val starting_time = System.currentTimeMillis()
       // We add votes below Threshold value
       val selected_features = (selected_features_0_votes ++ votes.filter(_._2 < a).map(_._1)).toSeq
-      val selected_features_dataframe = dataframe.select(selected_features.head, selected_features.tail: _*)
-      val retained_feat_percent = (selected_features.length.toDouble / dataframe.columns.length) * 100
+      println(s"Starting threshold computation with minVotes = ${a} with selected features ${selected_features.mkString(",")}")
+      if (selected_features.length < 2) {
+        val selected_features_dataframe = dataframe.select(selected_features.head, selected_features.tail: _*)
+        val retained_feat_percent = (selected_features.length.toDouble / dataframe.columns.length) * 100
+        if (classifier.isDefined)
+          compMeasure = classification_error(selected_features_dataframe, attributes, inverse_attributes, class_index, classifier.get)
 
-      if (classifier.isDefined)
-        compMeasure = classification_error(selected_features_dataframe, attributes, inverse_attributes, class_index, classifier.get)
-
-      e_v += ((a, alpha * compMeasure + (1 - alpha) * retained_feat_percent))
-
+        e_v += ((a, alpha * compMeasure + (1 - alpha) * retained_feat_percent))
+      }
+      println(s"Threshol computation in ${System.currentTimeMillis() - starting_time}")
     }
 
     val selected_threshold = e_v.minBy(_._2)._1
@@ -153,11 +161,11 @@ object DistributedFeatureSelection {
     * Partitioning functions
     * ************************/
 
-  def horizontal_partitioning(sc: SparkContext, input: RDD[Row],
-                              attributes: Map[Int, (Option[Seq[String]], String)], inverse_attributes: Map[String, Int],
-                              class_index: Int, numParts: Int): Array[(String, Int)] = {
+  def horizontal_partitioning_feature_selection(sc: SparkContext, input: RDD[Row],
+                                                attributes: Map[Int, (Option[Seq[String]], String)], inverse_attributes: Map[String, Int],
+                                                class_index: Int, numParts: Int): Array[(String, Int)] = {
 
-    /** Horizontally partition selection features*/
+    /** Horizontally partition selection features */
 
     println("***Using horizontal partitioning***")
     val br_attributes = sc.broadcast(attributes)
@@ -175,6 +183,8 @@ object DistributedFeatureSelection {
 
     partitioned.groupByKey().flatMap { case (_, iter) =>
 
+      val start_time = System.currentTimeMillis()
+
       val data = WekaWrapper.createInstances(iter, br_attributes.value, class_index)
 
       //Run Weka Filter to FS
@@ -183,16 +193,24 @@ object DistributedFeatureSelection {
       val eval = new CfsSubsetEval
       val search = new GreedyStepwise
       search.setSearchBackwards(true)
-
-      //val eval = new InfoGainAttributeEval
-      //val search = new Ranker
-
       filter.setEvaluator(eval)
       filter.setSearch(search)
       filter.setInputFormat(data)
       val filtered_data = Filter.useFilter(data, filter)
-
       val selected_attributes = WekaWrapper.getAttributes(filtered_data)
+
+
+      val filter2 = new AttributeSelection
+      val eval2 = new InfoGainAttributeEval
+      val search2 = new Ranker()
+      search2.setNumToSelect(selected_attributes.size)
+      filter2.setEvaluator(eval2)
+      filter2.setSearch(search2)
+      filter2.setInputFormat(data)
+      val filtered_data2 = Filter.useFilter(data, filter2)
+
+      println(System.currentTimeMillis() - start_time, selected_attributes, WekaWrapper.getAttributes(filtered_data2))
+
       // Getting the diff we can obtain the features to increase the votes and taking away the class
       (br_inverse_attributes.value.keySet.diff(selected_attributes) - br_attributes.value(class_index)._2).map((_, 1))
 
@@ -200,22 +218,25 @@ object DistributedFeatureSelection {
 
   }
 
-  def vertical_partitioning(sc: SparkContext, input: RDD[Row],
-                            attributes: Map[Int, (Option[Seq[String]], String)], inverse_attributes: Map[String, Int],
-                            class_index: Int, numParts: Int): Array[(String, Int)] = {
+  def vertical_partitioning_feature_selection(sc: SparkContext, input: RDD[Row],
+                                              attributes: Map[Int, (Option[Seq[String]], String)], inverse_attributes: Map[String, Int],
+                                              class_index: Int, numParts: Int): Array[(String, Int)] = {
 
     //TODO: Overlap
 
-    /** Vertically partition selection features*/
+    /** Vertically partition selection features */
 
     println("***Using vertical partitioning***")
+
     val br_attributes = sc.broadcast(attributes)
     val br_inverse_attributes = sc.broadcast(inverse_attributes)
     val classes = attributes(class_index)._1.get
     val br_classes = sc.broadcast(classes)
 
     //RDD Transpond
+    val start_time = System.currentTimeMillis()
     val transposed = transposeRDD(input)
+    println(s"Transposed time: ${System.currentTimeMillis() - start_time}")
 
     // Get the class column
     val br_class_column = sc.broadcast(transposed.filter { case (columnindex, _) => columnindex == class_index }.first())
@@ -226,6 +247,8 @@ object DistributedFeatureSelection {
       .groupByKey().flatMap {
       case (_, iter) =>
 
+        val start_time = System.currentTimeMillis()
+
         val data = WekaWrapper.createInstancesFromTranspose(iter, br_attributes.value, br_class_column.value, br_classes.value)
 
         //Run Weka Filter to FS
@@ -235,15 +258,26 @@ object DistributedFeatureSelection {
         val search = new GreedyStepwise
         search.setSearchBackwards(true)
 
-        //val eval = new InfoGainAttributeEval
-        //val search = new Ranker
-
         filter.setEvaluator(eval)
         filter.setSearch(search)
         filter.setInputFormat(data)
         val filtered_data = Filter.useFilter(data, filter)
-
         val selected_attributes = WekaWrapper.getAttributes(filtered_data)
+
+
+        //        val filter2 = new AttributeSelection
+        //        val eval2 = new InfoGainAttributeEval
+        //        val search2 = new Ranker()
+        //        search2.setNumToSelect(selected_attributes.size)
+        //        filter2.setEvaluator(eval2)
+        //        filter2.setSearch(search2)
+        //        filter2.setInputFormat(data)
+        //        val filtered_data2 = Filter.useFilter(data, filter2)
+
+
+        println(System.currentTimeMillis() - start_time, selected_attributes) //,WekaWrapper.getAttributes(filtered_data2))
+
+
         // Getting the diff we can obtain the features to increase the votes and taking away the class
         (br_inverse_attributes.value.keySet.diff(selected_attributes) - br_attributes.value(class_index)._2).map((_, 1))
 
