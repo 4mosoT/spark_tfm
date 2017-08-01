@@ -1,4 +1,4 @@
-import org.apache.spark.SparkContext
+import org.apache.spark.{HashPartitioner, SparkContext}
 import org.apache.spark.ml.classification._
 import org.apache.spark.ml.{Pipeline, PipelineStage}
 import org.apache.spark.ml.evaluation.MulticlassClassificationEvaluator
@@ -9,6 +9,8 @@ import org.rogach.scallop.{ScallopConf, ScallopOption, Subcommand}
 import weka.attributeSelection.{CfsSubsetEval, GreedyStepwise, InfoGainAttributeEval, Ranker}
 import weka.filters.Filter
 import weka.filters.supervised.attribute.AttributeSelection
+
+import scala.reflect.ClassTag
 
 
 object DistributedFeatureSelection {
@@ -73,8 +75,6 @@ object DistributedFeatureSelection {
     val dataframe = ss.read.option("maxColumns", "30000").csv(dataset_file)
 
 
-    val input = dataframe.rdd
-
     /** *****************************
       * Creation of attributes maps
       * *****************************/
@@ -101,10 +101,27 @@ object DistributedFeatureSelection {
     /** **************************
       * Getting the Votes vector.
       * **************************/
-
+    val rounds = 5
     val start_time = System.currentTimeMillis()
-    val votes = if (vertical_part) vertical_partitioning_feature_selection(ss.sparkContext, input, attributes, inverse_attributes, class_index, numParts)
-    else horizontal_partitioning_feature_selection(ss.sparkContext, input, attributes, inverse_attributes, class_index, numParts)
+
+    val votes = {
+      var sub_votes = Array[(String, Int)]()
+      if (vertical_part) {
+        val input = transposeRDD(dataframe.rdd)
+        for (round <- 1 to rounds) {
+          println(s"Round: $round")
+          sub_votes = sub_votes ++ vertical_partitioning_feature_selection(ss.sparkContext, shuffleRDD(input), attributes, inverse_attributes, class_index, numParts)
+        }
+      } else {
+        for (round <- 1 to rounds) {
+          println(s"Round: $round")
+          sub_votes = sub_votes ++ horizontal_partitioning_feature_selection(ss.sparkContext, shuffleRDD(dataframe.rdd), attributes, inverse_attributes, class_index, numParts)
+        }
+      }
+      sub_votes.groupBy(_._1).map(tuple => (tuple._1, tuple._2.map(_._2).sum)).toSeq
+    }
+
+    print(votes)
     println(s"Total time:${System.currentTimeMillis() - start_time}")
 
     /** ******************************************
@@ -113,10 +130,8 @@ object DistributedFeatureSelection {
 
     val avg_votes = votes.map(_._2).sum.toDouble / votes.length
     val std_votes = math.sqrt(votes.map(votes => math.pow(votes._2 - avg_votes, 2)).sum / votes.length)
-    val minVote = if (vertical_part) 1 else {
-      (avg_votes - (std_votes / 2)).toInt
-    }
-    val maxVote = if (vertical_part) numParts / 2 else (avg_votes + (std_votes / 2)).toInt
+    val minVote = if (vertical_part) 1 else (avg_votes - (std_votes / 2)).toInt
+    val maxVote = if (vertical_part) rounds else (avg_votes + (std_votes / 2)).toInt
 
     //We get the features that aren't in the votes set. That means features -> Votes = 0
     // ****Class column included****
@@ -129,7 +144,6 @@ object DistributedFeatureSelection {
 
     val step = if (vertical_part) 1 else 5
     for (a <- minVote to maxVote by step) {
-
       val starting_time = System.currentTimeMillis()
       // We add votes below Threshold value
       val selected_features = (selected_features_0_votes ++ votes.filter(_._2 < a).map(_._1)).toSeq
@@ -174,7 +188,7 @@ object DistributedFeatureSelection {
     val partitioned = input.map(row => (row.get(row.length - 1), row)).groupByKey()
       .flatMap({
         // Add an index for each subset (keys)
-        case (_, value) => value.zipWithIndex
+        case (_, value) => value.zipWithIndex //scala.util.Random.shuffle(value).zipWithIndex
       })
       .map({
         // Get the partition number for each row and make it the new key
@@ -218,7 +232,7 @@ object DistributedFeatureSelection {
 
   }
 
-  def vertical_partitioning_feature_selection(sc: SparkContext, input: RDD[Row],
+  def vertical_partitioning_feature_selection(sc: SparkContext, transposed: RDD[(Int, Seq[Any])],
                                               attributes: Map[Int, (Option[Seq[String]], String)], inverse_attributes: Map[String, Int],
                                               class_index: Int, numParts: Int): Array[(String, Int)] = {
 
@@ -232,11 +246,6 @@ object DistributedFeatureSelection {
     val br_inverse_attributes = sc.broadcast(inverse_attributes)
     val classes = attributes(class_index)._1.get
     val br_classes = sc.broadcast(classes)
-
-    //RDD Transpond
-    val start_time = System.currentTimeMillis()
-    val transposed = transposeRDD(input)
-    println(s"Transposed time: ${System.currentTimeMillis() - start_time}")
 
     // Get the class column
     val br_class_column = sc.broadcast(transposed.filter { case (columnindex, _) => columnindex == class_index }.first())
@@ -307,6 +316,15 @@ object DistributedFeatureSelection {
       }
     }
     columnAndRow.groupByKey.sortByKey().map { case (columnIndex, rowIterable) => (columnIndex, rowIterable.toSeq.sortBy(_._1).map(_._2)) }
+
+  }
+
+  def shuffleRDD[B: ClassTag](rdd: RDD[B]): RDD[B] = {
+
+    rdd.mapPartitions(iter => {
+      val rng = new scala.util.Random()
+      iter.map((rng.nextInt, _))
+    }).partitionBy(new HashPartitioner(rdd.partitions.length)).values
 
   }
 
