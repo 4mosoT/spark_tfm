@@ -131,8 +131,8 @@ object DistributedFeatureSelection {
 
     val avg_votes = votes.map(_._2).sum.toDouble / votes.length
     val std_votes = math.sqrt(votes.map(votes => math.pow(votes._2 - avg_votes, 2)).sum / votes.length)
-    val minVote = if (vertical_part) 1 else (avg_votes - (std_votes / 2)).toInt
-    val maxVote = if (vertical_part) rounds else (avg_votes + (std_votes / 2)).toInt
+    val minVote = if (vertical_part) rounds * (numParts - 1)  else (avg_votes - (std_votes / 2)).toInt
+    val maxVote = if (vertical_part) rounds  * numParts else (avg_votes + (std_votes / 2)).toInt
 
     //We get the features that aren't in the votes set. That means features -> Votes = 0
     // ****Class column included****
@@ -143,15 +143,15 @@ object DistributedFeatureSelection {
 
     val start_fisher = System.currentTimeMillis()
     var compMeasure = globalComplexityMeasure(dataframe, attributes, ss.sparkContext)
-    print(s"Complexity Measure Computation Time: ${System.currentTimeMillis() - start_fisher}")
+    println(s"Complexity Measure Computation Time: ${System.currentTimeMillis() - start_fisher}")
 
     val step = if (vertical_part) 1 else 5
     for (a <- minVote to maxVote by step) {
       val starting_time = System.currentTimeMillis()
       // We add votes below Threshold value
       val selected_features = (selected_features_0_votes ++ votes.filter(_._2 < a).map(_._1)).toSeq
-      println(s"Starting threshold computation with minVotes = $a with selected features ${selected_features.mkString(",")}")
       if (selected_features.length > 1) {
+        println(s"Starting threshold computation with minVotes = $a with ${selected_features.length} features")
         val selected_features_dataframe = dataframe.select(selected_features.head, selected_features.tail: _*)
         val retained_feat_percent = (selected_features.length.toDouble / dataframe.columns.length) * 100
         if (classifier.isDefined)
@@ -159,7 +159,7 @@ object DistributedFeatureSelection {
 
         e_v += ((a, alpha * compMeasure + (1 - alpha) * retained_feat_percent))
       }
-      println(s"Threshol computation in ${System.currentTimeMillis() - starting_time}")
+      println(s"Threshold computation in ${System.currentTimeMillis() - starting_time}")
     }
 
     val selected_threshold = e_v.minBy(_._2)._1
@@ -226,7 +226,7 @@ object DistributedFeatureSelection {
       filter2.setInputFormat(data)
       val filtered_data2 = Filter.useFilter(data, filter2)
 
-      println(System.currentTimeMillis() - start_time, selected_attributes, WekaWrapper.getAttributes(filtered_data2))
+      //println(System.currentTimeMillis() - start_time, selected_attributes, WekaWrapper.getAttributes(filtered_data2))
 
       // Getting the diff we can obtain the features to increase the votes and taking away the class
       (br_inverse_attributes.value.keySet.diff(selected_attributes) - br_attributes.value(class_index)._2).map((_, 1))
@@ -287,7 +287,7 @@ object DistributedFeatureSelection {
         //        val filtered_data2 = Filter.useFilter(data, filter2)
 
 
-        println(System.currentTimeMillis() - start_time, selected_attributes) //,WekaWrapper.getAttributes(filtered_data2))
+        //println(System.currentTimeMillis() - start_time, selected_attributes) //,WekaWrapper.getAttributes(filtered_data2))
 
 
         // Getting the diff we can obtain the features to increase the votes and taking away the class
