@@ -105,6 +105,8 @@ object DistributedFeatureSelection {
     val rounds = 5
     val start_time = System.currentTimeMillis()
 
+    if (vertical_part) println("*****Using vertical partitioning*****") else println("*****Using horizontal partitioning*****")
+
     val votes = {
       var sub_votes = Array[(String, Int)]()
       if (vertical_part) {
@@ -122,8 +124,7 @@ object DistributedFeatureSelection {
       sub_votes.groupBy(_._1).map(tuple => (tuple._1, tuple._2.map(_._2).sum)).toSeq
     }
 
-    print(votes)
-    println(s"Total time:${System.currentTimeMillis() - start_time}")
+    println(s"Votes computation time:${System.currentTimeMillis() - start_time}")
 
     /** ******************************************
       * Computing 'Selection Features Threshold'
@@ -150,16 +151,20 @@ object DistributedFeatureSelection {
       val starting_time = System.currentTimeMillis()
       // We add votes below Threshold value
       val selected_features = (selected_features_0_votes ++ votes.filter(_._2 < a).map(_._1)).toSeq
+
       if (selected_features.length > 1) {
-        println(s"Starting threshold computation with minVotes = $a with ${selected_features.length} features")
+        println(s"Starting threshold computation with minVotes = $a / maxVotes = $maxVote with ${selected_features.length - 1} features")
         val selected_features_dataframe = dataframe.select(selected_features.head, selected_features.tail: _*)
         val retained_feat_percent = (selected_features.length.toDouble / dataframe.columns.length) * 100
         if (classifier.isDefined)
           compMeasure = classification_error(selected_features_dataframe, attributes, inverse_attributes, class_index, classifier.get)
-
         e_v += ((a, alpha * compMeasure + (1 - alpha) * retained_feat_percent))
+
+        println(s"\tThreshold computation in ${System.currentTimeMillis() - starting_time} " +
+          s"\n\t\t Error: $compMeasure \n\t\t Retained Features Percent: $retained_feat_percent " +
+          s"\n\t\t EV Value = ${alpha * compMeasure + (1 - alpha) * retained_feat_percent} \n")
+
       }
-      println(s"Threshold computation in ${System.currentTimeMillis() - starting_time}")
     }
 
     val selected_threshold = e_v.minBy(_._2)._1
@@ -184,7 +189,7 @@ object DistributedFeatureSelection {
 
     /** Horizontally partition selection features */
 
-    println("***Using horizontal partitioning***")
+
     val br_attributes = sc.broadcast(attributes)
     val br_inverse_attributes = sc.broadcast(inverse_attributes)
 
@@ -242,8 +247,6 @@ object DistributedFeatureSelection {
     //TODO: Overlap
 
     /** Vertically partition selection features */
-
-    println("***Using vertical partitioning***")
 
     val br_attributes = sc.broadcast(attributes)
     val br_inverse_attributes = sc.broadcast(inverse_attributes)
