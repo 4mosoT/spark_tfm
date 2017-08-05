@@ -10,7 +10,6 @@ import weka.attributeSelection.{CfsSubsetEval, GreedyStepwise, InfoGainAttribute
 import weka.filters.Filter
 import weka.filters.supervised.attribute.AttributeSelection
 
-import scala.collection.JavaConverters._
 import scala.reflect.ClassTag
 
 
@@ -206,8 +205,6 @@ object DistributedFeatureSelection {
 
     partitioned.groupByKey().flatMap { case (_, iter) =>
 
-      val start_time = System.currentTimeMillis()
-
       val data = WekaWrapper.createInstances(iter, br_attributes.value, class_index)
 
       //Run Weka Filter to FS
@@ -223,16 +220,14 @@ object DistributedFeatureSelection {
       val selected_attributes = WekaWrapper.getAttributes(filtered_data)
 
 
-      val filter2 = new AttributeSelection
-      val eval2 = new InfoGainAttributeEval
-      val search2 = new Ranker()
-      search2.setNumToSelect(selected_attributes.size)
-      filter2.setEvaluator(eval2)
-      filter2.setSearch(search2)
-      filter2.setInputFormat(data)
-      val filtered_data2 = Filter.useFilter(data, filter2)
-
-      //println(System.currentTimeMillis() - start_time, selected_attributes, WekaWrapper.getAttributes(filtered_data2))
+      //      val filter2 = new AttributeSelection
+      //      val eval2 = new InfoGainAttributeEval
+      //      val search2 = new Ranker()
+      //      search2.setNumToSelect(selected_attributes.size)
+      //      filter2.setEvaluator(eval2)
+      //      filter2.setSearch(search2)
+      //      filter2.setInputFormat(data)
+      //      val filtered_data2 = Filter.useFilter(data, filter2)
 
       // Getting the diff we can obtain the features to increase the votes and taking away the class
       (br_inverse_attributes.value.keySet.diff(selected_attributes) - br_attributes.value(class_index)._2).map((_, 1))
@@ -263,8 +258,6 @@ object DistributedFeatureSelection {
       .groupByKey().flatMap {
       case (_, iter) =>
 
-        val start_time = System.currentTimeMillis()
-
         val data = WekaWrapper.createInstancesFromTranspose(iter, br_attributes.value, br_class_column.value, br_classes.value)
 
         //Run Weka Filter to FS
@@ -289,9 +282,6 @@ object DistributedFeatureSelection {
         //        filter2.setSearch(search2)
         //        filter2.setInputFormat(data)
         //        val filtered_data2 = Filter.useFilter(data, filter2)
-
-
-        //println(System.currentTimeMillis() - start_time, selected_attributes) //,WekaWrapper.getAttributes(filtered_data2))
 
 
         // Getting the diff we can obtain the features to increase the votes and taking away the class
