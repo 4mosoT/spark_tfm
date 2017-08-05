@@ -10,6 +10,7 @@ import weka.attributeSelection.{CfsSubsetEval, GreedyStepwise, InfoGainAttribute
 import weka.filters.Filter
 import weka.filters.supervised.attribute.AttributeSelection
 
+import scala.collection.JavaConverters._
 import scala.reflect.ClassTag
 
 
@@ -66,11 +67,10 @@ object DistributedFeatureSelection {
   }
 
   def select_features(dataset_file: String, numParts: Int, vertical: Boolean = false, alpha_value: Double,
-                      globalComplexityMeasure: (DataFrame, Map[Int, (Option[Seq[String]], String)], SparkContext) => Double,
+                      globalComplexityMeasure: (DataFrame, Map[Int, (Option[Seq[String]], String)], SparkContext, Option[RDD[(Int, Seq[Any])]]) => Double,
                       classifier: Option[PipelineStage]): Set[String] = {
 
-    val vertical_part = vertical
-    val ss = SparkSession.builder().appName("hsplit").master("local[*]").getOrCreate()
+    val ss = SparkSession.builder().master("local[*]").appName("distributed_feature_selection").getOrCreate()
     ss.sparkContext.setLogLevel("ERROR")
     val dataframe = ss.read.option("maxColumns", "30000").csv(dataset_file)
 
@@ -104,16 +104,17 @@ object DistributedFeatureSelection {
 
     val rounds = 5
     val start_time = System.currentTimeMillis()
+    if (vertical) println("*****Using vertical partitioning*****") else println("*****Using horizontal partitioning*****")
 
-    if (vertical_part) println("*****Using vertical partitioning*****") else println("*****Using horizontal partitioning*****")
+    var transpose_input: Option[RDD[(Int, Seq[Any])]] = None
 
     val votes = {
       var sub_votes = Array[(String, Int)]()
-      if (vertical_part) {
-        val input = transposeRDD(dataframe.rdd)
+      if (vertical) {
+        transpose_input = Some(transposeRDD(dataframe.rdd))
         for (round <- 1 to rounds) {
           println(s"Round: $round")
-          sub_votes = sub_votes ++ vertical_partitioning_feature_selection(ss.sparkContext, shuffleRDD(input), attributes, inverse_attributes, class_index, numParts)
+          sub_votes = sub_votes ++ vertical_partitioning_feature_selection(ss.sparkContext, shuffleRDD(transpose_input.get), attributes, inverse_attributes, class_index, numParts)
         }
       } else {
         for (round <- 1 to rounds) {
@@ -132,8 +133,8 @@ object DistributedFeatureSelection {
 
     val avg_votes = votes.map(_._2).sum.toDouble / votes.length
     val std_votes = math.sqrt(votes.map(votes => math.pow(votes._2 - avg_votes, 2)).sum / votes.length)
-    val minVote = if (vertical_part) rounds * (numParts - 1)  else (avg_votes - (std_votes / 2)).toInt
-    val maxVote = if (vertical_part) rounds  * numParts else (avg_votes + (std_votes / 2)).toInt
+    val minVote = if (vertical) rounds * (numParts - 1) else (avg_votes - (std_votes / 2)).toInt
+    val maxVote = if (vertical) rounds * numParts else (avg_votes + (std_votes / 2)).toInt
 
     //We get the features that aren't in the votes set. That means features -> Votes = 0
     // ****Class column included****
@@ -143,10 +144,10 @@ object DistributedFeatureSelection {
     var e_v = collection.mutable.ArrayBuffer[(Int, Double)]()
 
     val start_fisher = System.currentTimeMillis()
-    var compMeasure = globalComplexityMeasure(dataframe, attributes, ss.sparkContext)
-    println(s"Complexity Measure Computation Time: ${System.currentTimeMillis() - start_fisher}")
+    var compMeasure = globalComplexityMeasure(dataframe, attributes, ss.sparkContext, transpose_input)
+    println(s"Complexity Measure Computation Time: ${System.currentTimeMillis() - start_fisher}. Value $compMeasure")
 
-    val step = if (vertical_part) 1 else 5
+    val step = if (vertical) 1 else 5
     for (a <- minVote to maxVote by step) {
       val starting_time = System.currentTimeMillis()
       // We add votes below Threshold value
@@ -389,81 +390,74 @@ object DistributedFeatureSelection {
 
   }
 
-  def zeroGlobal(dataframe: DataFrame, attributes: Map[Int, (Option[Seq[String]], String)], sc: SparkContext): Double = {
+  def zeroGlobal(dataframe: DataFrame, attributes: Map[Int, (Option[Seq[String]], String)], sc: SparkContext, transposedRDD: Option[RDD[(Int, Seq[Any])]]): Double = {
     0.0
   }
 
-  def fisherRatio(dataframe: DataFrame, attributes: Map[Int, (Option[Seq[String]], String)], sc: SparkContext): Double = {
+  def fisherRatio(dataframe: DataFrame, attributes: Map[Int, (Option[Seq[String]], String)], sc: SparkContext, transposedRDD: Option[RDD[(Int, Seq[Any])]]): Double = {
+
 
     // ProportionclassMap => Class -> Proportion of class
     val samples = dataframe.count().toDouble
     val br_proportionClassMap = sc.broadcast(dataframe.groupBy(dataframe.columns.last).count().rdd.map(row => row(0) -> (row(1).asInstanceOf[Long] / samples.toDouble)).collect().toMap)
+    val br_attributes = sc.broadcast(attributes)
+    val class_column = dataframe.select(dataframe.columns.last).rdd.map(_ (0)).collect()
 
-    //Auxiliar Arrays
-    val f_feats = collection.mutable.ArrayBuffer.empty[Double]
-    val computed_classes = collection.mutable.ArrayBuffer.empty[String]
 
-    dataframe.columns.dropRight(1).zipWithIndex.foreach { case (column_name, index) =>
-      var sumMean: Double = 0
-      var sumVar: Double = 0
+    val rdd = if (transposedRDD.isDefined) transposedRDD.get else transposeRDD(dataframe.drop(dataframe.columns.last).rdd)
+    val f1 = rdd.map {
+      case (column_index, row) =>
+        val zipped_row = row.zip(class_column)
+        var sumMean: Double = 0
+        var sumVar: Double = 0
 
-      if (attributes(index)._1.isDefined) {
-        //If we have categorical values we need to discretize them.
-        // We use zipWithIndex where its index is its discretize value.
-        val br_values = sc.broadcast(attributes(index)._1.get.zipWithIndex.map { case (value, sub_index) => value -> (sub_index + 1) }.toMap)
+        //Auxiliar Arrays
+        val computed_classes = collection.mutable.ArrayBuffer.empty[String]
 
-        br_proportionClassMap.value.keySet.foreach { _class_ =>
+        if (br_attributes.value(column_index)._1.isDefined) {
+          //If we have categorical values we need to discretize them.
+          // We use zipWithIndex where its index is its discretize value.
+          val values = br_attributes.value(column_index)._1.get.zipWithIndex.map { case (value, sub_index) => value -> (sub_index + 1) }.toMap
+          br_proportionClassMap.value.keySet.foreach { _class_ =>
+            val filtered_class_column = zipped_row.filter(_._2 == _class_)
+            val mean_class = filtered_class_column.groupBy(_._1).map { case (key, value) => value.length * values(key.toString) }.sum / samples.toDouble
 
-          val filtered_class_column = dataframe.filter(dataframe(dataframe.columns.last).equalTo(_class_)).select(column_name)
-          val mean_class = filtered_class_column.groupBy(column_name).count().rdd.map(row => br_values.value(row.get(0).toString) * row.get(1).asInstanceOf[Long]).reduce(_ + _) / samples.toDouble
+            computed_classes += _class_.toString
 
-          computed_classes += _class_.toString
+            br_proportionClassMap.value.keySet.foreach { sub_class_ =>
+              if (!computed_classes.contains(sub_class_)) {
+                val mean_sub_class = zipped_row.filter(_._2 == sub_class_).groupBy(_._1).map { case (key, value) => value.length * values(key.toString) }.sum / samples.toDouble
 
-          br_proportionClassMap.value.keySet.foreach { sub_class_ =>
-
-            if (!computed_classes.contains(sub_class_)) {
-              val mean_sub_class = dataframe.filter(dataframe(dataframe.columns.last).equalTo(sub_class_))
-                .select(column_name).groupBy(column_name).count().rdd.map(row => br_values.value(row.get(0).toString) * row.get(1).asInstanceOf[Long]).reduce(_ + _) / samples.toDouble
-
-              sumMean += scala.math.pow(mean_class - mean_sub_class, 2) * br_proportionClassMap.value(_class_) * br_proportionClassMap.value(sub_class_)
+                sumMean += scala.math.pow(mean_class - mean_sub_class, 2) * br_proportionClassMap.value(_class_) * br_proportionClassMap.value(sub_class_)
+              }
             }
+            val variance = filtered_class_column.map(value => math.pow(values(value._1.toString) - mean_class, 2)).sum / samples.toDouble
+            sumVar += variance * br_proportionClassMap.value(_class_)
           }
-          val variance = filtered_class_column
-            .rdd.map(row => math.pow(br_values.value(row.get(0).toString) - mean_class, 2)).reduce(_ + _) / samples.toDouble
-          sumVar += variance * br_proportionClassMap.value(_class_)
-        }
-        f_feats += sumMean / sumVar
+        } else {
 
-      } else {
+          br_proportionClassMap.value.keySet.foreach { _class_ =>
+            val filtered_class_column = zipped_row.filter(_._2 == _class_)
+            val mean_class = filtered_class_column.map(_._1.toString.toDouble).sum / samples.toDouble
 
-        br_proportionClassMap.value.keySet.foreach { _class_ =>
+            computed_classes += _class_.toString
 
-          val filtered_class_column = dataframe.filter(dataframe(dataframe.columns.last).equalTo(_class_)).select(column_name)
-          val mean_class = filtered_class_column.rdd.map(_.get(0).toString.toDouble).reduce(_ + _) / samples
+            br_proportionClassMap.value.keySet.foreach { sub_class_ =>
+              if (!computed_classes.contains(sub_class_)) {
+                val mean_sub_class = zipped_row.filter(_._2 == sub_class_).map(_._1.toString.toDouble).sum / samples.toDouble
 
-          computed_classes += _class_.toString
-
-          br_proportionClassMap.value.keySet.foreach { sub_class_ =>
-
-            if (!computed_classes.contains(sub_class_)) {
-              val mean_sub_class = dataframe.filter(dataframe(dataframe.columns.last).equalTo(sub_class_)).rdd
-                .map(_.get(0).toString.toDouble).reduce(_ + _) / samples.toDouble
-
-              sumMean += scala.math.pow(mean_class - mean_sub_class, 2) * br_proportionClassMap.value(_class_) * br_proportionClassMap.value(sub_class_)
+                sumMean += scala.math.pow(mean_class - mean_sub_class, 2) * br_proportionClassMap.value(_class_) * br_proportionClassMap.value(sub_class_)
+              }
             }
+            val variance = filtered_class_column.map(value => math.pow(value._1.toString.toDouble - mean_class, 2)).sum / samples.toDouble
+            sumVar += variance * br_proportionClassMap.value(_class_)
+
+
           }
-          val variance = filtered_class_column
-            .rdd.map(row => math.pow(row.get(0).toString.toDouble - mean_class, 2)).reduce(_ + _) / samples.toDouble
-          sumVar += variance * br_proportionClassMap.value(_class_)
         }
-        f_feats += sumMean / sumVar
-
-
-      }
-    }
-
-    1 / f_feats.max
-
+        sumMean / sumVar
+    }.max
+    1 / f1
   }
 
 
