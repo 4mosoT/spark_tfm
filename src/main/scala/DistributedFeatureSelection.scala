@@ -5,6 +5,7 @@ import org.apache.spark.ml.evaluation.MulticlassClassificationEvaluator
 import org.apache.spark.ml.feature.{OneHotEncoder, StringIndexer, VectorAssembler}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.{DataFrame, Row, SparkSession}
+import org.apache.spark.sql.functions.col
 import org.rogach.scallop.{ScallopConf, ScallopOption, Subcommand}
 import weka.attributeSelection.{CfsSubsetEval, GreedyStepwise, InfoGainAttributeEval, Ranker}
 import weka.filters.Filter
@@ -69,7 +70,7 @@ object DistributedFeatureSelection {
                       globalComplexityMeasure: (DataFrame, Map[Int, (Option[Seq[String]], String)], SparkContext, Option[RDD[(Int, Seq[Any])]]) => Double,
                       classifier: Option[PipelineStage]): Set[String] = {
 
-    val ss = SparkSession.builder().master("local[*]").appName("distributed_feature_selection").getOrCreate()
+    val ss = SparkSession.builder().appName("distributed_feature_selection").master("local[*]").getOrCreate()
     ss.sparkContext.setLogLevel("ERROR")
     val dataframe = ss.read.option("maxColumns", "30000").csv(dataset_file)
 
@@ -81,6 +82,7 @@ object DistributedFeatureSelection {
     val class_index = dataframe.columns.length - 1
     val first_row = dataframe.first().toSeq.map(_.toString)
     val inverse_attributes_ = collection.mutable.Map[String, Int]()
+
     val attributes = dataframe.columns.zipWithIndex.map({
       case (column_name, index) =>
         // If categorical we need to add the distinct values it can take plus its column name
@@ -347,9 +349,14 @@ object DistributedFeatureSelection {
     }
 
     //Cast to double of columns that aren't categorical
-    val df = columns_to_assemble.foldLeft(selected_features_dataframe) { case (new_df, cname) =>
-      new_df.withColumn(cname, new_df(cname).cast("double"))
-    }
+    val df = selected_features_dataframe.select(selected_features_dataframe.columns.map { c =>
+      if (columns_to_assemble.contains(c)) {
+        col(c).cast("Double")
+      } else {
+        col(c)
+      }
+    }: _*)
+
 
     // Transform categorical data to one_hot in order to work with MLlib
     df.columns.filter {
@@ -370,6 +377,7 @@ object DistributedFeatureSelection {
     pipeline = pipeline :+ new VectorAssembler().setInputCols(columns_to_assemble).setOutputCol("features")
 
     val df_one_hot = new Pipeline().setStages(pipeline :+ classifier).fit(df).transform(df)
+    
 
     val evaluator = new MulticlassClassificationEvaluator()
       .setLabelCol("label")
