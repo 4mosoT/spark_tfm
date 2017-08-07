@@ -75,7 +75,6 @@ object DistributedFeatureSelection {
     ss.sparkContext.setLogLevel("ERROR")
     val dataframe = ss.read.option("maxColumns", "30000").csv(dataset_file)
 
-
     /** *****************************
       * Creation of attributes maps
       * *****************************/
@@ -84,19 +83,27 @@ object DistributedFeatureSelection {
 
     //Map creation of attributes
     val inverse_attributes = dataframe.columns.zipWithIndex.map { case (column_name, index) => column_name -> index }.toMap
+    val br_inverse_attributes = ss.sparkContext.broadcast(inverse_attributes)
 
     //Now we have to deal with categorical values
     val first_row = dataframe.first().toSeq.map(_.toString)
-    val test = first_row.zip(dataframe.columns).filter { case (value: String, c_name) => parseNumeric(value).isEmpty || inverse_attributes(c_name) == class_index }.map(_._2)
-    val categorical_attributes = dataframe.select(test.map { c =>
+
+    val categorical_filter = ss.sparkContext.parallelize(first_row.zip(dataframe.columns)).filter {
+      case (value: String, c_name) =>
+        parseNumeric(value).isEmpty || br_inverse_attributes.value(c_name) == class_index
+    }.map(_._2).collect()
+
+    val categorical_attributes = dataframe.select(categorical_filter.map { c =>
       collect_set(c)
-    }: _*).first().toSeq.zip(test).map { case (values: mutable.WrappedArray[String], column_name) => inverse_attributes(column_name) -> (Some(values), column_name) }
+    }: _*).first().toSeq.zip(categorical_filter).map { case (values: mutable.WrappedArray[String], column_name) => inverse_attributes(column_name) -> (Some(values), column_name) }
+
 
     val numerical_attributes = inverse_attributes.keySet.diff(categorical_attributes.map(_._2._2).toSet)
       .map(c_name => inverse_attributes(c_name) -> (None: Option[mutable.WrappedArray[String]], c_name))
 
     //Finally we add categorical and numerical values
     val attributes = (categorical_attributes ++ numerical_attributes).toMap
+
 
     /** **************************
       * Getting the Votes vector.
@@ -303,7 +310,6 @@ object DistributedFeatureSelection {
       Some(s.toDouble)
     } catch {
       case _: Exception => None
-
     }
   }
 
