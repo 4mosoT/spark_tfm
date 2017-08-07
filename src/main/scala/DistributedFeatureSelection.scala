@@ -5,12 +5,13 @@ import org.apache.spark.ml.evaluation.MulticlassClassificationEvaluator
 import org.apache.spark.ml.feature.{OneHotEncoder, StringIndexer, VectorAssembler}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.{DataFrame, Row, SparkSession}
-import org.apache.spark.sql.functions.col
+import org.apache.spark.sql.functions.{col, collect_set, concat, lit}
 import org.rogach.scallop.{ScallopConf, ScallopOption, Subcommand}
 import weka.attributeSelection.{CfsSubsetEval, GreedyStepwise, InfoGainAttributeEval, Ranker}
 import weka.filters.Filter
 import weka.filters.supervised.attribute.AttributeSelection
 
+import scala.collection.mutable
 import scala.reflect.ClassTag
 
 
@@ -80,24 +81,22 @@ object DistributedFeatureSelection {
       * *****************************/
 
     val class_index = dataframe.columns.length - 1
+
+    //Map creation of attributes
+    val inverse_attributes = dataframe.columns.zipWithIndex.map { case (column_name, index) => column_name -> index }.toMap
+
+    //Now we have to deal with categorical values
     val first_row = dataframe.first().toSeq.map(_.toString)
-    val inverse_attributes_ = collection.mutable.Map[String, Int]()
+    val test = first_row.zip(dataframe.columns).filter { case (value: String, c_name) => parseNumeric(value).isEmpty || inverse_attributes(c_name) == class_index }.map(_._2)
+    val categorical_attributes = dataframe.select(test.map { c =>
+      collect_set(c)
+    }: _*).first().toSeq.zip(test).map { case (values: mutable.WrappedArray[String], column_name) => inverse_attributes(column_name) -> (Some(values), column_name) }
 
-    val attributes = dataframe.columns.zipWithIndex.map({
-      case (column_name, index) =>
-        // If categorical we need to add the distinct values it can take plus its column name
-        if (parseNumeric(first_row(index)).isEmpty || index == class_index) {
-          inverse_attributes_ += column_name -> index
-          index -> (Some(dataframe.select(dataframe.columns(index)).distinct().collect().toSeq.map(_.get(0).toString)), column_name)
-        } else {
-          // If not categorical we only need column name
-          inverse_attributes_ += column_name -> index
-          index -> (None, column_name)
-        }
-    }).toMap
+    val numerical_attributes = inverse_attributes.keySet.diff(categorical_attributes.map(_._2._2).toSet)
+      .map(c_name => inverse_attributes(c_name) -> (None: Option[mutable.WrappedArray[String]], c_name))
 
-
-    val inverse_attributes = inverse_attributes_.toMap
+    //Finally we add categorical and numerical values
+    val attributes = (categorical_attributes ++ numerical_attributes).toMap
 
     /** **************************
       * Getting the Votes vector.
@@ -377,7 +376,7 @@ object DistributedFeatureSelection {
     pipeline = pipeline :+ new VectorAssembler().setInputCols(columns_to_assemble).setOutputCol("features")
 
     val df_one_hot = new Pipeline().setStages(pipeline :+ classifier).fit(df).transform(df)
-    
+
 
     val evaluator = new MulticlassClassificationEvaluator()
       .setLabelCol("label")
