@@ -26,8 +26,10 @@ object DistributedFeatureSelection {
       banner("\nUsage of this program: -d file -p number_of_partitions -v true_if_vertical_partition(default = false) measure (classifier -m classifier | -o another classifier) \n\n" +
         "Examples:  -d connect-4.data -p 10 measure classifier -m SVM \n\t\t   -d connect-4.data -p 10 measure -o F1 \n"
       )
-      val dataset: ScallopOption[String] = opt[String]("dataset", required = true, descr = "Dataset to use in CSV format / Class must be last column")
-      val class_index: ScallopOption[Boolean] = toggle("first", default = Some(false), descrYes = "Required if class is first column")
+      val dataset: ScallopOption[String] = opt[String]("dataset", required = true, descr = "Dataset to use in CSV format / Class must be last or first column")
+      val train_dataset: ScallopOption[String] = opt[String]("train dataset", descr = "Train dataset to use in CSV format / Class must be last or first column")
+
+      val class_index: ScallopOption[Boolean] = toggle("first", noshort = true, default = Some(false), descrYes = "Required if class is first column")
       val feature_algorithm: ScallopOption[String] = opt[String]("feature_selection_algorithm", required = true, descr = "Feature selection algorithm",
         validate = { x => x == "CFS" || x == "IG" || x == "RF" })
       val partType: ScallopOption[Boolean] = toggle("vertical", default = Some(false), descrYes = "Vertical partitioning / Default Horizontal")
@@ -66,20 +68,40 @@ object DistributedFeatureSelection {
         None
     }
 
-    val selected_features = selectFeatures(opts.dataset(), opts.class_index(), opts.numParts(), opts.partType(), opts.alpha(), globalCompyMeasure, classifier, filter)
+    val selected_features = selectFeatures(opts.dataset(), opts.train_dataset.toOption, opts.class_index(), opts.numParts(), opts.partType(), opts.alpha(), globalCompyMeasure, classifier, filter)
 
     println(selected_features)
 
 
   }
 
-  def selectFeatures(dataset_file: String, class_is_first: Boolean, numParts: Int, vertical: Boolean = false, alpha_value: Double,
+  def selectFeatures(dataset_file: String, dataset_train: Option[String], class_is_first: Boolean, numParts: Int, vertical: Boolean = false, alpha_value: Double,
                      globalComplexityMeasure: (DataFrame, Map[Int, (Option[Seq[String]], String)], SparkContext, Option[RDD[(Int, Seq[Any])]]) => Double,
                      classifier: Option[PipelineStage], filter: String): Set[String] = {
 
     val ss = SparkSession.builder().appName("distributed_feature_selection").master("local[*]").getOrCreate()
     ss.sparkContext.setLogLevel("ERROR")
     val dataframe = ss.read.option("maxColumns", "30000").csv(dataset_file)
+
+    //TODO: Better if doing with dataframes
+    // If there is not training set, we split the data maintaining class distribution. 2/3 train 1/3 test
+    if (dataset_train.isEmpty) {
+      val partitioned = dataframe.rdd.map(row => (row.get(row.length - 1), row)).groupByKey()
+        .flatMap({
+          // Add an index for each subset (keys)
+          case (_, value) => value.zipWithIndex
+        })
+        .map({
+          // Get the partition number for each row and make it the new key
+          case (row, index) => (index % 3, row)
+        })
+
+      val train_set = partitioned.filter( x => x._1 == 1 || x._1 == 2).map(_._2)
+      val test_set = partitioned.filter( _ == 0).map(_._2)
+    }
+
+
+
 
     /** *****************************
       * Creation of attributes maps
@@ -374,14 +396,16 @@ object DistributedFeatureSelection {
     //Assemble features
     pipeline = pipeline :+ new VectorAssembler().setInputCols(columns_to_assemble).setOutputCol("features")
 
-    val df_one_hot = new Pipeline().setStages(pipeline :+ classifier).fit(df).transform(df)
 
+    val model = new Pipeline().setStages(pipeline :+ classifier).fit(df)
+    //    model.save("model_save")
 
     val evaluator = new MulticlassClassificationEvaluator()
       .setLabelCol("label")
       .setPredictionCol("prediction")
       .setMetricName("accuracy")
-    1 - evaluator.evaluate(df_one_hot)
+
+    1 - evaluator.evaluate(model.transform(df))
 
 
   }
