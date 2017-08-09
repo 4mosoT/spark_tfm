@@ -27,6 +27,7 @@ object DistributedFeatureSelection {
         "Examples:  -d connect-4.data -p 10 measure classifier -m SVM \n\t\t   -d connect-4.data -p 10 measure -o F1 \n"
       )
       val dataset: ScallopOption[String] = opt[String]("dataset", required = true, descr = "Dataset to use in CSV format / Class must be last column")
+      val class_index: ScallopOption[Boolean] = toggle("first", default = Some(false), descrYes = "Required if class is first column")
       val feature_algorithm: ScallopOption[String] = opt[String]("feature_selection_algorithm", required = true, descr = "Feature selection algorithm",
         validate = { x => x == "CFS" || x == "IG" || x == "RF" })
       val partType: ScallopOption[Boolean] = toggle("vertical", default = Some(false), descrYes = "Vertical partitioning / Default Horizontal")
@@ -34,14 +35,14 @@ object DistributedFeatureSelection {
       val compMeasure = new Subcommand("measure") {
         val classifier = new Subcommand("classifier") {
           val model: ScallopOption[String] = opt[String]("model", descr = "Available Classifiers:  SVM, Knn, Decision Tree (DT), NaiveBayes (NB)",
-            validate = {x => x == "SVM" || x == "KNN" || x == "DT" || x == "NB"})
+            validate = { x => x == "SVM" || x == "KNN" || x == "DT" || x == "NB" })
         }
         addSubcommand(classifier)
-        val other: ScallopOption[String] = opt[String]("other", descr = "Available Metrics: F1", validate = { x => x == "F1"})
+        val other: ScallopOption[String] = opt[String]("other", descr = "Available Metrics: F1", validate = { x => x == "F1" })
 
       }
       addSubcommand(compMeasure)
-      val alpha: ScallopOption[Double] = opt[Double]("alpha", descr = "Aplha Value for threshold computation / Default 0.75", validate = {x => 0 <= x && x <= 1}, default = Some(0.75))
+      val alpha: ScallopOption[Double] = opt[Double]("alpha", descr = "Aplha Value for threshold computation / Default 0.75", validate = { x => 0 <= x && x <= 1 }, default = Some(0.75))
       verify()
     }
 
@@ -65,14 +66,14 @@ object DistributedFeatureSelection {
         None
     }
 
-    val selected_features = selectFeatures(opts.dataset(), opts.numParts(), opts.partType(), opts.alpha(), globalCompyMeasure, classifier, filter)
+    val selected_features = selectFeatures(opts.dataset(), opts.class_index(), opts.numParts(), opts.partType(), opts.alpha(), globalCompyMeasure, classifier, filter)
 
     println(selected_features)
 
 
   }
 
-  def selectFeatures(dataset_file: String, numParts: Int, vertical: Boolean = false, alpha_value: Double,
+  def selectFeatures(dataset_file: String, class_is_first: Boolean, numParts: Int, vertical: Boolean = false, alpha_value: Double,
                      globalComplexityMeasure: (DataFrame, Map[Int, (Option[Seq[String]], String)], SparkContext, Option[RDD[(Int, Seq[Any])]]) => Double,
                      classifier: Option[PipelineStage], filter: String): Set[String] = {
 
@@ -84,7 +85,7 @@ object DistributedFeatureSelection {
       * Creation of attributes maps
       * *****************************/
 
-    val class_index = dataframe.columns.length - 1
+    val class_index = if (class_is_first) 0 else dataframe.columns.length - 1
 
     //Map creation of attributes
     val inverse_attributes = dataframe.columns.zipWithIndex.map { case (column_name, index) => column_name -> index }.toMap
