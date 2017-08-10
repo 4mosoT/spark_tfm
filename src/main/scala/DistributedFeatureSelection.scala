@@ -1,7 +1,7 @@
 import org.apache.spark.{HashPartitioner, SparkContext}
 import org.apache.spark.ml.classification._
-import org.apache.spark.ml.{Pipeline, PipelineStage}
-import org.apache.spark.ml.evaluation.MulticlassClassificationEvaluator
+import org.apache.spark.ml.{Pipeline, PipelineModel, PipelineStage}
+import org.apache.spark.ml.evaluation.{BinaryClassificationEvaluator, MulticlassClassificationEvaluator}
 import org.apache.spark.ml.feature.{OneHotEncoder, StringIndexer, VectorAssembler}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.{DataFrame, Row, SparkSession}
@@ -68,16 +68,13 @@ object DistributedFeatureSelection {
         None
     }
 
-    val selected_features = selectFeatures(opts.dataset(), opts.train_dataset.toOption, opts.class_index(), opts.numParts(), opts.partType(), opts.alpha(), globalCompyMeasure, classifier, filter)
-
-    println(selected_features)
-
+    selectFeatures(opts.dataset(), opts.train_dataset.toOption, opts.class_index(), opts.numParts(), opts.partType(), opts.alpha(), globalCompyMeasure, classifier, filter)
 
   }
 
   def selectFeatures(dataset_file: String, dataset_train: Option[String], class_is_first: Boolean, numParts: Int, vertical: Boolean = false, alpha_value: Double,
                      globalComplexityMeasure: (DataFrame, Map[Int, (Option[Seq[String]], String)], SparkContext, Option[RDD[(Int, Seq[Any])]]) => Double,
-                     classifier: Option[PipelineStage], filter: String): Set[String] = {
+                     classifier: Option[PipelineStage], filter: String): Unit = {
 
     val ss = SparkSession.builder().appName("distributed_feature_selection").master("local[*]").getOrCreate()
     ss.sparkContext.setLogLevel("ERROR")
@@ -98,13 +95,15 @@ object DistributedFeatureSelection {
         })
 
       val train_set = partitioned.filter(x => x._1 == 1 || x._1 == 2).map(_._2)
-      val test_set = partitioned.filter( _ == 0).map(_._2)
-
+      val test_set = partitioned.filter(_._1 == 0).map(_._2)
       dataframe = ss.createDataFrame(train_set, dataframe.schema)
       test_dataframe = ss.createDataFrame(test_set, dataframe.schema)
+
     } else {
+
       test_dataframe = ss.read.option("maxColumns", "30000").csv(dataset_train.get)
     }
+
     println(s"Train: ${dataframe.count()} Test: ${test_dataframe.count()}")
 
     /** *****************************
@@ -189,6 +188,7 @@ object DistributedFeatureSelection {
     var compMeasure = globalComplexityMeasure(dataframe, attributes, ss.sparkContext, transpose_input)
     println(s"Complexity Measure Computation Time: ${System.currentTimeMillis() - start_fisher}. Value $compMeasure")
 
+
     val step = if (vertical) 1 else 5
     for (a <- minVote to maxVote by step) {
       val starting_time = System.currentTimeMillis()
@@ -199,8 +199,13 @@ object DistributedFeatureSelection {
         println(s"Starting threshold computation with minVotes = $a / maxVotes = $maxVote with ${selected_features.length - 1} features")
         val selected_features_dataframe = dataframe.select(selected_features.head, selected_features.tail: _*)
         val retained_feat_percent = (selected_features.length.toDouble / dataframe.columns.length) * 100
-        if (classifier.isDefined)
-          compMeasure = classificationError(selected_features_dataframe, attributes, inverse_attributes, class_index, classifier.get)
+        if (classifier.isDefined) {
+          val (pipeline_stages, columns_to_cast) = createPipeline(selected_features_dataframe.columns, attributes, inverse_attributes, class_index)
+          val casted_dataframe = castDFToDouble(selected_features_dataframe, columns_to_cast)
+          val pipeline = new Pipeline().setStages(pipeline_stages :+ classifier.get).fit(casted_dataframe)
+          compMeasure = evaluateModel(casted_dataframe, pipeline)
+        }
+
         e_v += ((a, alpha * compMeasure + (1 - alpha) * retained_feat_percent))
 
         println(s"\tThreshold computation in ${System.currentTimeMillis() - starting_time} " +
@@ -211,7 +216,32 @@ object DistributedFeatureSelection {
     }
 
     val selected_threshold = e_v.minBy(_._2)._1
-    (selected_features_0_votes ++ votes.filter(_._2 < selected_threshold).map(_._1)) - attributes(class_index)._2
+    val features = (selected_features_0_votes ++ votes.filter(_._2 < selected_threshold).map(_._1)).toArray
+
+    /** ******************************************
+      * Evaluate Models With Selected Features
+      * ******************************************/
+
+    //Once we get the votes, we proceed to evaluate
+
+    val (pipeline_stages, columns_to_cast) = createPipeline(features, attributes, inverse_attributes, class_index)
+
+    val selected_features_train_dataframe = dataframe.select(features.head, features.tail: _*)
+    val selected_features_test_dataframe = test_dataframe.select(features.head, features.tail: _*)
+
+    val casted_train_dataframe = castDFToDouble(selected_features_train_dataframe, columns_to_cast)
+    val casted_test_dataframe = castDFToDouble(selected_features_test_dataframe, columns_to_cast)
+
+    println(s"Number of features is ${features.length - 1}")
+    Seq(("SMV", new OneVsRest().setClassifier(new LinearSVC())), ("KNN", new KNNClassifier().setK(1)),
+      ("Decision Tree", new DecisionTreeClassifier()), ("Naive Bayes", new NaiveBayes()))
+      .foreach {
+
+        case (name, classi) =>
+          val accuracy = evaluateModel(casted_test_dataframe, new Pipeline().setStages(pipeline_stages :+ classi).fit(casted_train_dataframe))
+          println(s"Accuracy for $name is ${1-accuracy}")
+
+      }
 
 
     //      #For use with Weka library
@@ -351,39 +381,38 @@ object DistributedFeatureSelection {
     filter
   }
 
-
-  /** ********************
-    * Complexity measures
-    * *********************/
-
-  def classificationError(selected_features_dataframe: DataFrame,
-                          attributes: Map[Int, (Option[Seq[String]], String)],
-                          inverse_attributes: Map[String, Int],
-                          class_index: Int,
-                          classifier: PipelineStage): Double = {
-
-    //Creation of pipeline
-    var pipeline: Array[PipelineStage] = Array()
-
-    //Mllib needs to special columns [features] and [label] to work. We have to assemble the columns we selected
-    var columns_to_assemble: Array[String] = selected_features_dataframe.columns.filter {
-      cname =>
-        val original_attr_index = inverse_attributes(cname)
-        attributes(original_attr_index)._1.isEmpty && original_attr_index != class_index
-    }
-
+  def castDFToDouble(df: DataFrame, columns: Array[String]): DataFrame = {
     //Cast to double of columns that aren't categorical
-    val df = selected_features_dataframe.select(selected_features_dataframe.columns.map { c =>
-      if (columns_to_assemble.contains(c)) {
+    df.select(df.columns.map { c =>
+      if (columns.contains(c)) {
         col(c).cast("Double")
       } else {
         col(c)
       }
     }: _*)
 
+  }
+
+  def createPipeline(columns: Array[String],
+                     attributes: Map[Int, (Option[Seq[String]], String)],
+                     inverse_attributes: Map[String, Int],
+                     class_index: Int
+                    ): (Array[PipelineStage], Array[String]) = {
+
+
+    //Mllib needs two special columns [features] and [label] to work. We have to assemble the columns we selected
+    val double_columns_to_assemble: Array[String] = columns.filter {
+      cname =>
+        val original_attr_index = inverse_attributes(cname)
+        attributes(original_attr_index)._1.isEmpty && original_attr_index != class_index
+    }
+    var columns_to_assemble: Array[String] = Array()
+
+    //Creation of pipeline
+    var pipeline: Array[PipelineStage] = Array()
 
     // Transform categorical data to one_hot in order to work with MLlib
-    df.columns.filter {
+    columns.filter {
       cname =>
         val original_attr_index = inverse_attributes(cname)
         attributes(original_attr_index)._1.isDefined && original_attr_index != class_index
@@ -398,11 +427,14 @@ object DistributedFeatureSelection {
     //Transform class column from categorical to index
     pipeline = pipeline :+ new StringIndexer().setInputCol(attributes(class_index)._2).setOutputCol("label")
     //Assemble features
-    pipeline = pipeline :+ new VectorAssembler().setInputCols(columns_to_assemble).setOutputCol("features")
+    pipeline = pipeline :+ new VectorAssembler().setInputCols(double_columns_to_assemble ++ columns_to_assemble).setOutputCol("features")
 
 
-    val model = new Pipeline().setStages(pipeline :+ classifier).fit(df)
-    //    model.save("model_save")
+    (pipeline, double_columns_to_assemble)
+
+  }
+
+  def evaluateModel(df: DataFrame, model: PipelineModel): Double = {
 
     val evaluator = new MulticlassClassificationEvaluator()
       .setLabelCol("label")
@@ -411,8 +443,13 @@ object DistributedFeatureSelection {
 
     1 - evaluator.evaluate(model.transform(df))
 
-
   }
+
+
+  /** ********************
+    * Complexity measures
+    * *********************/
+
 
   def zeroGlobal(dataframe: DataFrame, attributes: Map[Int, (Option[Seq[String]], String)], sc: SparkContext, transposedRDD: Option[RDD[(Int, Seq[Any])]]): Double = {
     0.0
