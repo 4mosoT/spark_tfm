@@ -5,7 +5,7 @@ import org.apache.spark.ml.evaluation.MulticlassClassificationEvaluator
 import org.apache.spark.ml.feature.{OneHotEncoder, StringIndexer, VectorAssembler}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.{DataFrame, Row, SparkSession}
-import org.apache.spark.sql.functions.{col, collect_set, concat, lit}
+import org.apache.spark.sql.functions.{col, collect_set}
 import org.rogach.scallop.{ScallopConf, ScallopOption, Subcommand}
 import weka.attributeSelection._
 import weka.core.Instances
@@ -81,11 +81,12 @@ object DistributedFeatureSelection {
 
     val ss = SparkSession.builder().appName("distributed_feature_selection").master("local[*]").getOrCreate()
     ss.sparkContext.setLogLevel("ERROR")
-    val dataframe = ss.read.option("maxColumns", "30000").csv(dataset_file)
+    var dataframe = ss.read.option("maxColumns", "30000").csv(dataset_file)
+    var test_dataframe = dataframe
 
-    //TODO: Better if doing with dataframes
     // If there is not training set, we split the data maintaining class distribution. 2/3 train 1/3 test
     if (dataset_train.isEmpty) {
+      println("Splitting train/test")
       val partitioned = dataframe.rdd.map(row => (row.get(row.length - 1), row)).groupByKey()
         .flatMap({
           // Add an index for each subset (keys)
@@ -96,12 +97,15 @@ object DistributedFeatureSelection {
           case (row, index) => (index % 3, row)
         })
 
-      val train_set = partitioned.filter( x => x._1 == 1 || x._1 == 2).map(_._2)
+      val train_set = partitioned.filter(x => x._1 == 1 || x._1 == 2).map(_._2)
       val test_set = partitioned.filter( _ == 0).map(_._2)
+
+      dataframe = ss.createDataFrame(train_set, dataframe.schema)
+      test_dataframe = ss.createDataFrame(test_set, dataframe.schema)
+    } else {
+      test_dataframe = ss.read.option("maxColumns", "30000").csv(dataset_train.get)
     }
-
-
-
+    println(s"Train: ${dataframe.count()} Test: ${test_dataframe.count()}")
 
     /** *****************************
       * Creation of attributes maps
