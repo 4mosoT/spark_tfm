@@ -1,9 +1,12 @@
-import java.util
 import java.io.File
+import java.util
 
 import org.apache.spark.sql.{DataFrame, Row}
-import weka.core.{Attribute, DenseInstance, Instances}
+import weka.attributeSelection._
 import weka.core.converters.ArffSaver
+import weka.core.{Attribute, DenseInstance, Instances}
+import weka.filters.Filter
+import weka.filters.supervised.attribute.AttributeSelection
 
 import scala.collection.mutable
 
@@ -150,6 +153,33 @@ object WekaWrapper {
     data
 
 
+  }
+
+
+  def filterAttributes(data: Instances, algorithm: String): AttributeSelection = {
+
+    //We will always run CFS
+    var filter = new AttributeSelection
+    val eval = new CfsSubsetEval
+    val search = new GreedyStepwise
+    search.setSearchBackwards(true)
+    filter.setEvaluator(eval)
+    filter.setSearch(search)
+    filter.setInputFormat(data)
+
+    if (algorithm != "CFS") {
+      //If not CFS we need the number of attributes CFS selected
+      val filtered_data = Filter.useFilter(data, filter)
+      val selected_attributes = WekaWrapper.getAttributes(filtered_data)
+      filter = new AttributeSelection
+      val eval2 = if (algorithm == "IG") new InfoGainAttributeEval else new ReliefFAttributeEval
+      val search2 = new Ranker()
+      search2.setNumToSelect(selected_attributes.size)
+      filter.setEvaluator(eval2)
+      filter.setSearch(search2)
+      filter.setInputFormat(data)
+    }
+    filter
   }
 
   def getAttributes(instances: Instances): mutable.Set[String] = {

@@ -1,16 +1,13 @@
-import org.apache.spark.{HashPartitioner, SparkContext}
 import org.apache.spark.ml.classification._
-import org.apache.spark.ml.{Pipeline, PipelineModel, PipelineStage}
-import org.apache.spark.ml.evaluation.{BinaryClassificationEvaluator, MulticlassClassificationEvaluator}
+import org.apache.spark.ml.evaluation.MulticlassClassificationEvaluator
 import org.apache.spark.ml.feature.{OneHotEncoder, StringIndexer, VectorAssembler}
+import org.apache.spark.ml.{Pipeline, PipelineModel, PipelineStage}
 import org.apache.spark.rdd.RDD
-import org.apache.spark.sql.{DataFrame, Row, SparkSession}
 import org.apache.spark.sql.functions.{col, collect_set}
+import org.apache.spark.sql.{DataFrame, Row, SparkSession}
+import org.apache.spark.{HashPartitioner, SparkContext}
 import org.rogach.scallop.{ScallopConf, ScallopOption, Subcommand}
-import weka.attributeSelection._
-import weka.core.Instances
 import weka.filters.Filter
-import weka.filters.supervised.attribute.AttributeSelection
 
 import scala.collection.mutable
 import scala.reflect.ClassTag
@@ -76,7 +73,7 @@ object DistributedFeatureSelection {
                      globalComplexityMeasure: (DataFrame, Map[Int, (Option[Seq[String]], String)], SparkContext, Option[RDD[(Int, Seq[Any])]]) => Double,
                      classifier: Option[PipelineStage], filter: String): Unit = {
 
-    val ss = SparkSession.builder().appName("distributed_feature_selection").master("local[*]").getOrCreate()
+    val ss = SparkSession.builder().appName("distributed_feature_selection").getOrCreate()
     ss.sparkContext.setLogLevel("ERROR")
     var dataframe = ss.read.option("maxColumns", "30000").csv(dataset_file)
     var test_dataframe = dataframe
@@ -152,15 +149,20 @@ object DistributedFeatureSelection {
       if (vertical) {
         transpose_input = Some(transposeRDD(dataframe.rdd))
         for (round <- 1 to rounds) {
+          val start_round = System.currentTimeMillis()
           println(s"Round: $round")
           sub_votes = sub_votes ++ verticalPartitioningFeatureSelection(ss.sparkContext, shuffleRDD(transpose_input.get),
             attributes, inverse_attributes, class_index, numParts, filter)
+          println(s"Round finished in: ${System.currentTimeMillis() - start_round}")
         }
       } else {
         for (round <- 1 to rounds) {
+          val start_round = System.currentTimeMillis()
           println(s"Round: $round")
           sub_votes = sub_votes ++ horizontalPartitioningFeatureSelection(ss.sparkContext, shuffleRDD(dataframe.rdd),
             attributes, inverse_attributes, class_index, numParts, filter)
+          println(s"Round finished in: ${System.currentTimeMillis() - start_round}")
+
         }
       }
       sub_votes.groupBy(_._1).map(tuple => (tuple._1, tuple._2.map(_._2).sum)).toSeq
@@ -279,7 +281,7 @@ object DistributedFeatureSelection {
     partitioned.groupByKey().flatMap { case (_, iter) =>
 
       val data = WekaWrapper.createInstances(iter, br_attributes.value, class_index)
-      val filtered_data = Filter.useFilter(data, filterAttributes(data, filter))
+      val filtered_data = Filter.useFilter(data, WekaWrapper.filterAttributes(data, filter))
       val selected_attributes = WekaWrapper.getAttributes(filtered_data)
 
       // Getting the diff we can obtain the features to increase the votes and taking away the class
@@ -312,7 +314,7 @@ object DistributedFeatureSelection {
       case (_, iter) =>
 
         val data = WekaWrapper.createInstancesFromTranspose(iter, br_attributes.value, br_class_column.value, br_classes.value)
-        val filtered_data = Filter.useFilter(data, filterAttributes(data, filter))
+        val filtered_data = Filter.useFilter(data, WekaWrapper.filterAttributes(data, filter))
         val selected_attributes = WekaWrapper.getAttributes(filtered_data)
 
         // Getting the diff we can obtain the features to increase the votes and taking away the class
@@ -355,31 +357,7 @@ object DistributedFeatureSelection {
 
   }
 
-  def filterAttributes(data: Instances, algorithm: String): AttributeSelection = {
 
-    //We will always run CFS
-    var filter = new AttributeSelection
-    val eval = new CfsSubsetEval
-    val search = new GreedyStepwise
-    search.setSearchBackwards(true)
-    filter.setEvaluator(eval)
-    filter.setSearch(search)
-    filter.setInputFormat(data)
-
-    if (algorithm != "CFS") {
-      //If not CFS we need the number of attributes CFS selected
-      val filtered_data = Filter.useFilter(data, filter)
-      val selected_attributes = WekaWrapper.getAttributes(filtered_data)
-      filter = new AttributeSelection
-      val eval2 = if (algorithm == "IG") new InfoGainAttributeEval else new ReliefFAttributeEval
-      val search2 = new Ranker()
-      search2.setNumToSelect(selected_attributes.size)
-      filter.setEvaluator(eval2)
-      filter.setSearch(search2)
-      filter.setInputFormat(data)
-    }
-    filter
-  }
 
   def castDFToDouble(df: DataFrame, columns: Array[String]): DataFrame = {
     //Cast to double of columns that aren't categorical
