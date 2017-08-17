@@ -25,7 +25,7 @@ object DistributedFeatureSelection {
         "Examples:  -d connect-4.data -p 10 measure classifier -m SVM \n\t\t   -d connect-4.data -p 10 measure -o F1 \n"
       )
       val dataset: ScallopOption[String] = opt[String]("dataset", required = true, descr = "Dataset to use in CSV format / Class must be last or first column")
-      val train_dataset: ScallopOption[String] = opt[String]("train dataset", descr = "Train dataset to use in CSV format / Class must be last or first column")
+      val test_dataset: ScallopOption[String] = opt[String]("test dataset", descr = "Train dataset to use in CSV format / Class must be last or first column")
 
       val class_index: ScallopOption[Boolean] = toggle("first", noshort = true, default = Some(false), descrYes = "Required if class is first column")
       val feature_algorithm: ScallopOption[String] = opt[String]("feature_selection_algorithm", required = true, descr = "Feature selection algorithm",
@@ -67,21 +67,21 @@ object DistributedFeatureSelection {
       case _ =>
         None
     }
-    selectFeatures(opts.dataset(), opts.train_dataset.toOption, opts.class_index(), opts.numParts(), opts.partType(), opts.overlap(), opts.alpha(), globalCompyMeasure, classifier, filter)
+    selectFeatures(opts.dataset(), opts.test_dataset.toOption, opts.class_index(), opts.numParts(), opts.partType(), opts.overlap(), opts.alpha(), globalCompyMeasure, classifier, filter)
 
   }
 
-  def selectFeatures(dataset_file: String, dataset_train: Option[String], class_is_first: Boolean, numParts: Int, vertical: Boolean, overlap: Double, alpha_value: Double,
+  def selectFeatures(dataset_file: String, dataset_test: Option[String], class_is_first: Boolean, numParts: Int, vertical: Boolean, overlap: Double, alpha_value: Double,
                      globalComplexityMeasure: (DataFrame, Broadcast[Map[Int, (Option[mutable.WrappedArray[String]], String)]], SparkContext, Option[RDD[(Int, Seq[Any])]], Int) => Double,
                      classifier: Option[PipelineStage], filter: String): Unit = {
 
-    val ss = SparkSession.builder().appName("distributed_feature_selection").master("local[*]").getOrCreate()
+    val ss = SparkSession.builder().appName("distributed_feature_selection").getOrCreate()
     ss.sparkContext.setLogLevel("ERROR")
     var dataframe = ss.read.option("maxColumns", "30000").csv(dataset_file)
     var test_dataframe = dataframe
 
     // If there is not training set, we split the data maintaining class distribution. 2/3 train 1/3 test
-    if (dataset_train.isEmpty) {
+    if (dataset_test.isEmpty) {
       println("Splitting train/test")
       val partitioned = dataframe.rdd.map(row => (row.get(row.length - 1), row)).groupByKey()
         .flatMap({
@@ -100,7 +100,7 @@ object DistributedFeatureSelection {
 
     } else {
 
-      test_dataframe = ss.read.option("maxColumns", "30000").csv(dataset_train.get)
+      test_dataframe = ss.read.option("maxColumns", "30000").csv(dataset_test.get)
     }
 
     println(s"Train: ${dataframe.count()} Test: ${test_dataframe.count()}")
