@@ -74,7 +74,7 @@ object DistributedFeatureSelection {
   def selectFeatures(dataset_file: String, dataset_test: Option[String], class_is_first: Boolean, numParts: Int, vertical: Boolean, overlap: Double, alpha_value: Double,
                      globalComplexityMeasure: (DataFrame, Broadcast[Map[Int, (Option[mutable.WrappedArray[String]], String)]], SparkContext, Option[RDD[(Int, Seq[Any])]], Int) => Double,
                      classifier: Option[PipelineStage], filter: String): Unit = {
-
+    val init_time = System.currentTimeMillis()
     val ss = SparkSession.builder().appName("distributed_feature_selection").getOrCreate()
     ss.sparkContext.setLogLevel("ERROR")
     var dataframe = ss.read.option("maxColumns", "30000").csv(dataset_file)
@@ -103,12 +103,13 @@ object DistributedFeatureSelection {
       test_dataframe = ss.read.option("maxColumns", "30000").csv(dataset_test.get)
     }
 
-    println(s"Train: ${dataframe.count()} Test: ${test_dataframe.count()}")
+    println(s"Train: ${dataframe.count()} Test: ${test_dataframe.count()} Time: ${System.currentTimeMillis() - init_time}\n")
 
     /** *****************************
       * Creation of attributes maps
       * *****************************/
 
+    val map_time = System.currentTimeMillis()
     val class_index = if (class_is_first) 0 else dataframe.columns.length - 1
 
     //Map creation of attributes
@@ -135,6 +136,7 @@ object DistributedFeatureSelection {
     val attributes = (categorical_attributes ++ numerical_attributes).toMap
 
     val br_attributes = ss.sparkContext.broadcast(attributes)
+    println(s"Attributes in ${System.currentTimeMillis()-map_time}\n")
 
     /** **************************
       * Getting the Votes vector.
@@ -173,12 +175,12 @@ object DistributedFeatureSelection {
       sub_votes.groupBy(_._1).map(tuple => (tuple._1, tuple._2.map(_._2).sum)).toSeq
     }
 
-    println(s"Votes computation time:${System.currentTimeMillis() - start_time}")
+    println(s"Votes computation time:${System.currentTimeMillis() - start_time}\n")
 
     /** ******************************************
       * Computing 'Selection Features Threshold'
       * ******************************************/
-
+    val threshold_time = System.currentTimeMillis()
     val avg_votes = votes.map(_._2).sum.toDouble / votes.length
     val std_votes = math.sqrt(votes.map(votes => math.pow(votes._2 - avg_votes, 2)).sum / votes.length)
     val minVote = if (vertical) rounds * (numParts - 1) else (avg_votes - (std_votes / 2)).toInt
@@ -191,9 +193,9 @@ object DistributedFeatureSelection {
     val alpha = alpha_value
     var e_v = collection.mutable.ArrayBuffer[(Int, Double)]()
 
-    val start_fisher = System.currentTimeMillis()
+    val start_comp = System.currentTimeMillis()
     var compMeasure = globalComplexityMeasure(dataframe, br_attributes, ss.sparkContext, transpose_input, class_index)
-    println(s"Complexity Measurey Computation Time: ${System.currentTimeMillis() - start_fisher}. Value $compMeasure")
+    println(s"Complexity Measurey Computation Time: ${System.currentTimeMillis() - start_comp}. Value $compMeasure")
 
 
     val step = if (vertical) 1 else 5
@@ -226,11 +228,14 @@ object DistributedFeatureSelection {
 
     val selected_threshold = e_v.minBy(_._2)._1
     val features = (selected_features_0_votes ++ votes.filter(_._2 < selected_threshold).map(_._1)).toArray
+    println(s"Total threshold computation in ${System.currentTimeMillis() - threshold_time}")
+    println(s"Total execution time is ${System.currentTimeMillis()-init_time}\n")
 
     /** ******************************************
       * Evaluate Models With Selected Features
       * ******************************************/
 
+    val evaluation_time = System.currentTimeMillis()
     //Once we get the votes, we proceed to evaluate
 
     val (pipeline_stages, columns_to_cast) = createPipeline(features, attributes, inverse_attributes, class_index)
@@ -266,6 +271,7 @@ object DistributedFeatureSelection {
     //      val selected_features_map = attributes.filterKeys(selected_inverse_features_map.values.toSeq.contains(_))
     //      WekaWrapper.createInstances(df, selected_features_map, selected_inverse_features_map, class_index)
 
+    println(s"Evaluation time is ${System.currentTimeMillis() - evaluation_time}\n")
   }
 
 
@@ -311,7 +317,7 @@ object DistributedFeatureSelection {
     val classes = br_attributes.value(class_index)._1.get
     val br_classes = sc.broadcast(classes)
 
-    val overlapping = transposed.sample(false, overlap)
+    val overlapping = transposed.sample(withReplacement = false, overlap)
     val br_overlapping = sc.broadcast(overlapping.collect().toIterable)
 
     // Get the class column
