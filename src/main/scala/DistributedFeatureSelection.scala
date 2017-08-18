@@ -75,7 +75,7 @@ object DistributedFeatureSelection {
                      globalComplexityMeasure: (DataFrame, Broadcast[Map[Int, (Option[mutable.WrappedArray[String]], String)]], SparkContext, Option[RDD[(Int, Seq[Any])]], Int) => Double,
                      classifier: Option[PipelineStage], filter: String): Unit = {
     val init_time = System.currentTimeMillis()
-    val ss = SparkSession.builder().appName("distributed_feature_selection").getOrCreate()
+    val ss = SparkSession.builder().appName("distributed_feature_selection").master("local[*]").getOrCreate()
     ss.sparkContext.setLogLevel("ERROR")
     var dataframe = ss.read.option("maxColumns", "30000").csv(dataset_file)
     var test_dataframe = dataframe
@@ -136,7 +136,7 @@ object DistributedFeatureSelection {
     val attributes = (categorical_attributes ++ numerical_attributes).toMap
 
     val br_attributes = ss.sparkContext.broadcast(attributes)
-    println(s"Attributes in ${System.currentTimeMillis()-map_time}\n")
+    println(s"Attributes in ${System.currentTimeMillis() - map_time}\n")
 
     /** **************************
       * Getting the Votes vector.
@@ -150,7 +150,7 @@ object DistributedFeatureSelection {
     var transpose_input: Option[RDD[(Int, Seq[Any])]] = None
 
     val votes = {
-      var sub_votes = Array[(String, Int)]()
+      var sub_votes = ss.sparkContext.emptyRDD[(String, Int)]
       if (vertical) {
         transpose_input = Some(transposeRDD(dataframe.rdd))
         for (round <- 1 to rounds) {
@@ -172,23 +172,29 @@ object DistributedFeatureSelection {
 
         }
       }
-      sub_votes.groupBy(_._1).map(tuple => (tuple._1, tuple._2.map(_._2).sum)).toSeq
+      sub_votes.reduceByKey(_ + _)
     }
 
     println(s"Votes computation time:${System.currentTimeMillis() - start_time}\n")
+    println(votes.sortBy(_._2).first())
 
     /** ******************************************
       * Computing 'Selection Features Threshold'
       * ******************************************/
+
+    val votes_length = votes.count()
     val threshold_time = System.currentTimeMillis()
-    val avg_votes = votes.map(_._2).sum.toDouble / votes.length
-    val std_votes = math.sqrt(votes.map(votes => math.pow(votes._2 - avg_votes, 2)).sum / votes.length)
+    val avg_votes = votes.map(_._2).sum / votes_length
+    val std_votes = math.sqrt(votes.map(votes => math.pow(votes._2 - avg_votes, 2)).sum / votes_length)
     val minVote = if (vertical) rounds * (numParts - 1) else (avg_votes - (std_votes / 2)).toInt
     val maxVote = if (vertical) rounds * numParts else (avg_votes + (std_votes / 2)).toInt
 
     //We get the features that aren't in the votes set. That means features -> Votes = 0
     // ****Class column included****
-    val selected_features_0_votes = inverse_attributes.keySet.diff(votes.map(_._1).toSet)
+    val RDD_inverse_attributes = ss.sparkContext.parallelize(inverse_attributes.toSeq)
+    val selected_features_0_votes = RDD_inverse_attributes.map(_._1).subtract(votes.map(_._1))
+
+    //val selected_features_0_votes = inverse_attributes.keySet.diff(votes.map(_._1).toSeq)
 
     val alpha = alpha_value
     var e_v = collection.mutable.ArrayBuffer[(Int, Double)]()
@@ -202,14 +208,14 @@ object DistributedFeatureSelection {
     for (a <- minVote to maxVote by step) {
       val starting_time = System.currentTimeMillis()
       // We add votes below Threshold value
-      val selected_features = (selected_features_0_votes ++ votes.filter(_._2 < a).map(_._1)).toSeq
+      val selected_features = selected_features_0_votes ++ votes.filter(_._2 < a).map(_._1)
 
-      if (selected_features.length > 1) {
-        println(s"Starting threshold computation with minVotes = $a / maxVotes = $maxVote with ${selected_features.length - 1} features")
-        val selected_features_dataframe = dataframe.select(selected_features.head, selected_features.tail: _*)
-        val retained_feat_percent = (selected_features.length.toDouble / dataframe.columns.length) * 100
+      if (selected_features.count() > 1) {
+        println(s"Starting threshold computation with minVotes = $a / maxVotes = $maxVote with ${selected_features.count() - 1} features")
+        val selected_features_dataframe = dataframe.select(selected_features.collect().map(col): _*)
+        val retained_feat_percent = (selected_features.count().toDouble / dataframe.columns.length) * 100
         if (classifier.isDefined) {
-          val (pipeline_stages, columns_to_cast) = createPipeline(selected_features_dataframe.columns, attributes, inverse_attributes, class_index)
+          val (pipeline_stages, columns_to_cast) = createPipeline(ss.sparkContext.parallelize(selected_features_dataframe.columns), br_attributes, br_inverse_attributes, class_index, ss.sparkContext)
           val casted_dataframe = castDFToDouble(selected_features_dataframe, columns_to_cast)
           val pipeline = new Pipeline().setStages(pipeline_stages :+ classifier.get).fit(casted_dataframe)
           val evaluator = new MulticlassClassificationEvaluator().setLabelCol("label")
@@ -227,9 +233,10 @@ object DistributedFeatureSelection {
     }
 
     val selected_threshold = e_v.minBy(_._2)._1
-    val features = (selected_features_0_votes ++ votes.filter(_._2 < selected_threshold).map(_._1)).toArray
+    val features = selected_features_0_votes ++ votes.filter(_._2 < selected_threshold).map(_._1)
+
     println(s"Total threshold computation in ${System.currentTimeMillis() - threshold_time}")
-    println(s"Total execution time is ${System.currentTimeMillis()-init_time}\n")
+    println(s"Total execution time is ${System.currentTimeMillis() - init_time}\n")
 
     /** ******************************************
       * Evaluate Models With Selected Features
@@ -238,10 +245,10 @@ object DistributedFeatureSelection {
     val evaluation_time = System.currentTimeMillis()
     //Once we get the votes, we proceed to evaluate
 
-    val (pipeline_stages, columns_to_cast) = createPipeline(features, attributes, inverse_attributes, class_index)
+    val (pipeline_stages, columns_to_cast) = createPipeline(features, br_attributes, br_inverse_attributes, class_index, ss.sparkContext)
 
-    val selected_features_train_dataframe = dataframe.select(features.head, features.tail: _*)
-    val selected_features_test_dataframe = test_dataframe.select(features.head, features.tail: _*)
+    val selected_features_train_dataframe = dataframe.select(features.collect().map(col): _*)
+    val selected_features_test_dataframe = test_dataframe.select(features.collect().map(col): _*)
 
     val casted_train_dataframe = castDFToDouble(selected_features_train_dataframe, columns_to_cast)
     val casted_test_dataframe = castDFToDouble(selected_features_test_dataframe, columns_to_cast)
@@ -253,7 +260,7 @@ object DistributedFeatureSelection {
     val evaluator = new MulticlassClassificationEvaluator().setLabelCol("label")
       .setPredictionCol("prediction").setMetricName("accuracy")
 
-    println(s"Number of features is ${features.length - 1}")
+    println(s"Number of features is ${features.count() - 1}")
     Seq(("SMV", new OneVsRest().setClassifier(new LinearSVC())), ("Decision Tree", new DecisionTreeClassifier()),
       ("Naive Bayes", new NaiveBayes()), ("KNN", new KNNClassifier().setK(1)))
       .foreach {
@@ -281,7 +288,7 @@ object DistributedFeatureSelection {
 
   def horizontalPartitioningFeatureSelection(sc: SparkContext, input: RDD[Row],
                                              br_attributes: Broadcast[Map[Int, (Option[mutable.WrappedArray[String]], String)]], br_inverse_attributes: Broadcast[Map[String, Int]],
-                                             class_index: Int, numParts: Int, filter: String): Array[(String, (Int, Long))] = {
+                                             class_index: Int, numParts: Int, filter: String): RDD[(String, (Int, Long))] = {
 
     /** Horizontally partition selection features */
 
@@ -305,13 +312,13 @@ object DistributedFeatureSelection {
       // Getting the diff we can obtain the features to increase the votes and taking away the class
       (br_inverse_attributes.value.keySet.diff(selected_attributes) - br_attributes.value(class_index)._2).map((_, (1, System.currentTimeMillis() - start_time)))
 
-    }.reduceByKey((t1, t2) => (t1._1 + t2._1, math.max(t1._2, t2._2))).collect()
+    }.reduceByKey((t1, t2) => (t1._1 + t2._1, math.max(t1._2, t2._2)))
 
   }
 
   def verticalPartitioningFeatureSelection(sc: SparkContext, transposed: RDD[(Int, Seq[Any])],
                                            br_attributes: Broadcast[Map[Int, (Option[mutable.WrappedArray[String]], String)]], br_inverse_attributes: Broadcast[Map[String, Int]],
-                                           class_index: Int, numParts: Int, filter: String, overlap: Double = 0): Array[(String, (Int, Long))] = {
+                                           class_index: Int, numParts: Int, filter: String, overlap: Double = 0): RDD[(String, (Int, Long))] = {
 
     /** Vertically partition selection features */
     val classes = br_attributes.value(class_index)._1.get
@@ -337,7 +344,7 @@ object DistributedFeatureSelection {
         (br_inverse_attributes.value.keySet.diff(selected_attributes) - br_attributes.value(class_index)._2).map((_, (1, System.currentTimeMillis() - start_time)))
 
 
-    }.reduceByKey((t1, t2) => (t1._1 + t2._1, math.max(t1._2, t2._2))).collect()
+    }.reduceByKey((t1, t2) => (t1._1 + t2._1, math.max(t1._2, t2._2)))
 
 
   }
@@ -386,44 +393,37 @@ object DistributedFeatureSelection {
 
   }
 
-  def createPipeline(columns: Array[String],
-                     attributes: Map[Int, (Option[Seq[String]], String)],
-                     inverse_attributes: Map[String, Int],
-                     class_index: Int
+  def createPipeline(columns: RDD[String],
+                     attributes: Broadcast[Map[Int, (Option[mutable.WrappedArray[String]], String)]],
+                     inverse_attributes: Broadcast[Map[String, Int]],
+                     class_index: Int, sc: SparkContext
                     ): (Array[PipelineStage], Array[String]) = {
 
 
     //Mllib needs two special columns [features] and [label] to work. We have to assemble the columns we selected
-    val double_columns_to_assemble: Array[String] = columns.filter {
+    val double_columns_to_assemble: RDD[String] = columns.filter {
       cname =>
-        val original_attr_index = inverse_attributes(cname)
-        attributes(original_attr_index)._1.isEmpty && original_attr_index != class_index
+        val original_attr_index = inverse_attributes.value(cname)
+        attributes.value(original_attr_index)._1.isEmpty && original_attr_index != class_index
     }
-    var columns_to_assemble: Array[String] = Array()
-
-    //Creation of pipeline
-    var pipeline: Array[PipelineStage] = Array()
 
     // Transform categorical data to one_hot in order to work with MLlib
-    columns.filter {
+    val stages_columns = columns.filter {
       cname =>
-        val original_attr_index = inverse_attributes(cname)
-        attributes(original_attr_index)._1.isDefined && original_attr_index != class_index
-    }.foreach {
+        val original_attr_index = inverse_attributes.value(cname)
+        attributes.value(original_attr_index)._1.isDefined && original_attr_index != class_index
+    }.map {
       cname =>
         val st_indexer = new StringIndexer().setInputCol(cname).setOutputCol(s"${cname}_index")
-        pipeline = pipeline :+ st_indexer
-        pipeline = pipeline :+ new OneHotEncoder().setInputCol(st_indexer.getOutputCol).setOutputCol(s"${cname}_vect")
-        columns_to_assemble = columns_to_assemble :+ s"${cname}_vect"
-    }
+        (Array(st_indexer, new OneHotEncoder().setInputCol(st_indexer.getOutputCol).setOutputCol(s"${cname}_vect")), Array(s"${cname}_vect"))
+    }.reduce((tuple1, tuple2) => (tuple1._1 ++ tuple2._1, tuple1._2 ++ tuple2._2))
 
-    //Transform class column from categorical to index
-    pipeline = pipeline :+ new StringIndexer().setInputCol(attributes(class_index)._2).setOutputCol("label")
-    //Assemble features
-    pipeline = pipeline :+ new VectorAssembler().setInputCols(double_columns_to_assemble ++ columns_to_assemble).setOutputCol("features")
+    val columns_to_assemble: Array[String] = double_columns_to_assemble.collect() ++ stages_columns._2
+    //Creation of pipeline // Transform class column from categorical to index //Assemble features
+    val pipeline: Array[PipelineStage] = stages_columns._1 ++
+      Array(new StringIndexer().setInputCol(attributes.value(class_index)._2).setOutputCol("label"), new VectorAssembler().setInputCols(columns_to_assemble).setOutputCol("features")  )
 
-
-    (pipeline, double_columns_to_assemble)
+    (pipeline, columns_to_assemble)
 
   }
 
