@@ -471,7 +471,7 @@ object DistributedFeatureSelection {
     val class_column = sc.broadcast(dataframe.select(dataframe.columns(class_index)).rdd.map(_ (0)).collect())
 
 
-    val rdd = if (transposedRDD.isEmpty) transposedRDD else transposeRDD(dataframe.drop(dataframe.columns(class_index)).rdd)
+    val rdd = if (!transposedRDD.isEmpty) transposedRDD else transposeRDD(dataframe.drop(dataframe.columns(class_index)).rdd)
     val f1 = rdd.map {
       case (column_index, row) =>
         val zipped_row = row.zip(class_column.value)
@@ -530,12 +530,13 @@ object DistributedFeatureSelection {
   def f2(dataframe: DataFrame, br_attributes: Broadcast[Map[Int, (Option[mutable.WrappedArray[String]], String)]], sc: SparkContext, transposedRDD: RDD[(Int, Seq[Any])], class_index: Int): Double = {
 
     val class_column = sc.broadcast(dataframe.select(dataframe.columns(class_index)).rdd.map(_ (0)).collect())
-    val rdd = if (transposedRDD.isEmpty()) transposedRDD else transposeRDD(dataframe.drop(dataframe.columns(class_index)).rdd)
+    val rdd = if (!transposedRDD.isEmpty) transposedRDD else transposeRDD(dataframe.drop(dataframe.columns(class_index)).rdd)
 
-    var result = 0.0
 
     val f2 = rdd.map {
+
       case (column_index, row) =>
+        var result = 0.0
         val zipped_row = row.zip(class_column.value)
 
         //Auxiliar Arrays
@@ -548,12 +549,12 @@ object DistributedFeatureSelection {
 
           br_attributes.value(class_index)._1.get.foreach { _class_ =>
 
-            val datasetC = zipped_row.filter(_._2 == _class_).map(x => values(x._2.toString))
+            val datasetC = zipped_row.filter(_._2 == _class_).map(x => values(x._1.toString))
             computed_classes += _class_.toString
 
             br_attributes.value(class_index)._1.get.foreach { sub_class_ =>
               if (!computed_classes.contains(sub_class_)) {
-                val datasetK = zipped_row.filter(_._2 == sub_class_).map(x => values(x._2.toString))
+                val datasetK = zipped_row.filter(_._2 == sub_class_).map(x => values(x._1.toString))
 
                 val minmaxi = Seq(datasetC.max, datasetK.max).min
                 val maxmini = Seq(datasetC.min, datasetK.min).max
@@ -582,9 +583,10 @@ object DistributedFeatureSelection {
             }
           }
         }
+      result
     }
+    f2.sum()
 
-    result
   }
 }
 
