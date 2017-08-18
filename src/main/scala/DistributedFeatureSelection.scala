@@ -1,3 +1,5 @@
+import java.io
+
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.ml.classification._
 import org.apache.spark.ml.evaluation.MulticlassClassificationEvaluator
@@ -179,7 +181,7 @@ object DistributedFeatureSelection {
     }
 
     println(s"Votes computation time:${System.currentTimeMillis() - start_time}\n")
-    println("Min votes feature:" +votes.sortBy(_._2).first())
+    println("Min votes feature:" + votes.sortBy(_._2).first())
 
     /** ******************************************
       * Computing 'Selection Features Threshold'
@@ -414,22 +416,40 @@ object DistributedFeatureSelection {
     }
 
     // Transform categorical data to one_hot in order to work with MLlib
-    val stages_columns = columns.filter {
+    val categorical_columns_filter = columns.filter {
       cname =>
         val original_attr_index = inverse_attributes.value(cname)
         attributes.value(original_attr_index)._1.isDefined && original_attr_index != class_index
-    }.map {
-      cname =>
-        val st_indexer = new StringIndexer().setInputCol(cname).setOutputCol(s"${cname}_index")
-        (Array(st_indexer, new OneHotEncoder().setInputCol(st_indexer.getOutputCol).setOutputCol(s"${cname}_vect")), Array(s"${cname}_vect"))
-    }.reduce((tuple1, tuple2) => (tuple1._1 ++ tuple2._1, tuple1._2 ++ tuple2._2))
+    }
 
-    val columns_to_assemble: Array[String] = double_columns_to_assemble.collect() ++ stages_columns._2
-    //Creation of pipeline // Transform class column from categorical to index //Assemble features
-    val pipeline: Array[PipelineStage] = stages_columns._1 ++
-      Array(new StringIndexer().setInputCol(attributes.value(class_index)._2).setOutputCol("label"), new VectorAssembler().setInputCols(columns_to_assemble).setOutputCol("features")  )
+    if (categorical_columns_filter.count > 1){
+      val stages_columns =
+        categorical_columns_filter.map {
+          cname =>
+            val st_indexer = new StringIndexer().setInputCol(cname).setOutputCol(s"${cname}_index")
+            (Array(st_indexer, new OneHotEncoder().setInputCol(st_indexer.getOutputCol).setOutputCol(s"${cname}_vect")), Array(s"${cname}_vect"))
+        }.reduce((tuple1, tuple2) => (tuple1._1 ++ tuple2._1, tuple1._2 ++ tuple2._2))
 
-    (pipeline, columns_to_assemble)
+      val columns_to_assemble: Array[String] = double_columns_to_assemble.collect() ++ stages_columns._2
+      //Creation of pipeline // Transform class column from categorical to index //Assemble features
+      val pipeline: Array[PipelineStage] = stages_columns._1 ++
+        Array(new StringIndexer().setInputCol(attributes.value(class_index)._2).setOutputCol("label"), new VectorAssembler().setInputCols(columns_to_assemble).setOutputCol("features"))
+
+      (pipeline, columns_to_assemble)
+
+    }else{
+
+      val columns_to_assemble: Array[String] = double_columns_to_assemble.collect()
+      //Creation of pipeline // Transform class column from categorical to index //Assemble features
+      val pipeline: Array[PipelineStage] = Array(new StringIndexer().setInputCol(attributes.value(class_index)._2).setOutputCol("label"), new VectorAssembler().setInputCols(columns_to_assemble).setOutputCol("features"))
+
+      (pipeline, columns_to_assemble)
+
+    }
+
+
+
+
 
   }
 
