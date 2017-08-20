@@ -153,6 +153,7 @@ object DistributedFeatureSelection {
     else println(s"*****Using horizontal partitioning*****\n*****Using $filter algorithm*****")
 
     var transpose_input: RDD[(Int, Seq[Any])] = ss.sparkContext.emptyRDD[(Int, Seq[Any])]
+    var times = ss.sparkContext.emptyRDD[Long]
 
     val votes = {
       var sub_votes = ss.sparkContext.emptyRDD[(String, Int)]
@@ -165,7 +166,8 @@ object DistributedFeatureSelection {
           val result = verticalPartitioningFeatureSelection(ss.sparkContext, shuffleRDD(transpose_input),
             br_attributes, br_inverse_attributes, class_index, numParts, filter, overlap)
           sub_votes = sub_votes ++ result.map(x => (x._1, x._2._1))
-          println(s"Round finished in: ${System.currentTimeMillis() - start_round}. Max computing time is ${result.map(_._2._2).max}")
+          times = times ++ result.map(x => x._2._2)
+          println(s"Round finished in: ${System.currentTimeMillis() - start_round}. ")
         }
       } else {
         for (round <- 1 to rounds) {
@@ -174,15 +176,15 @@ object DistributedFeatureSelection {
           val result = horizontalPartitioningFeatureSelection(ss.sparkContext, shuffleRDD(dataframe.rdd),
             br_attributes, br_inverse_attributes, class_index, numParts, filter)
           sub_votes = sub_votes ++ result.map(x => (x._1, x._2._1))
-          println(s"Round finished in: ${System.currentTimeMillis() - start_round}. Max computing time is ${result.map(_._2._2).max}")
+          times = times ++ result.map(x => x._2._2)
+          println(s"Round finished in: ${System.currentTimeMillis() - start_round}. ")
 
         }
       }
       sub_votes.reduceByKey(_ + _)
     }
 
-    println(s"Votes computation time:${System.currentTimeMillis() - start_time}\n")
-    println("Min votes feature:" + votes.sortBy(_._2).first())
+    println(s"Votes computation time:${System.currentTimeMillis() - start_time}")
 
     /** ******************************************
       * Computing 'Selection Features Threshold'
@@ -200,17 +202,12 @@ object DistributedFeatureSelection {
     val selected_features_0_votes = RDD_inverse_attributes.map(_._1).subtract(votes.map(_._1))
     RDD_inverse_attributes.unpersist()
 
-    print("Features 0 votes: ")
-    selected_features_0_votes.foreach(print)
-
-    //val selected_features_0_votes = inverse_attributes.keySet.diff(votes.map(_._1).toSeq)
-
     val alpha = alpha_value
     var e_v = collection.mutable.ArrayBuffer[(Int, Double)]()
 
     val start_comp = System.currentTimeMillis()
     var compMeasure = globalComplexityMeasure(dataframe, br_attributes, ss.sparkContext, transpose_input, class_index)
-    println(s"\nComplexity Measurey Computation Time: ${System.currentTimeMillis() - start_comp}. Value $compMeasure")
+    println(s"\nComplexity Measurey Computation Time: ${System.currentTimeMillis() - start_comp}. Value $compMeasure\n")
 
 
     val step = if (vertical) 1 else 5
@@ -245,6 +242,7 @@ object DistributedFeatureSelection {
     val features = selected_features_0_votes ++ votes.filter(_._2 < selected_threshold).map(_._1)
 
     println(s"Total threshold computation in ${System.currentTimeMillis() - threshold_time}")
+    println(s"Max computation time by partition: ${times.max}")
     println(s"Total execution time is ${System.currentTimeMillis() - init_time}\n")
 
     /** ******************************************
@@ -307,7 +305,7 @@ object DistributedFeatureSelection {
     /** Horizontally partition selection features */
 
 
-    val partitioned = input.map(row => (row.get(row.length - 1), row)).groupByKey()
+    input.map(row => (row.get(row.length - 1), row)).groupByKey()
       .flatMap({
         // Add an index for each subset (keys)
         case (_, value) => value.zipWithIndex //scala.util.Random.shuffle(value).zipWithIndex
@@ -316,8 +314,7 @@ object DistributedFeatureSelection {
         // Get the partition number for each row and make it the new key
         case (row, index) => (index % numParts, row)
       })
-
-    partitioned.groupByKey().flatMap { case (_, iter) =>
+      .groupByKey().flatMap { case (_, iter) =>
       val start_time = System.currentTimeMillis()
       val data = WekaWrapper.createInstances(iter, br_attributes.value, class_index)
       val filtered_data = Filter.useFilter(data, WekaWrapper.filterAttributes(data, filter))
