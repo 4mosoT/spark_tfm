@@ -105,7 +105,9 @@ object DistributedFeatureSelection {
       test_dataframe = ss.read.option("maxColumns", "30000").csv(dataset_test.get)
     }
 
-    println(s"Train: ${dataframe.count()} Test: ${test_dataframe.count()} Time: ${System.currentTimeMillis() - init_time}\n")
+    dataframe.cache()
+
+    //println(s"Train: ${dataframe.count()} Test: ${test_dataframe.count()} Time: ${System.currentTimeMillis() - init_time}\n")
 
     /** *****************************
       * Creation of attributes maps
@@ -158,6 +160,7 @@ object DistributedFeatureSelection {
       var sub_votes = ss.sparkContext.emptyRDD[(String, Int)]
       if (vertical) {
         transpose_input = transposeRDD(dataframe.rdd)
+        transpose_input.cache()
         for (round <- 1 to rounds) {
           val start_round = System.currentTimeMillis()
           println(s"Round: $round")
@@ -258,19 +261,23 @@ object DistributedFeatureSelection {
     val selected_features_train_dataframe = dataframe.select(features_columns: _*)
     val selected_features_test_dataframe = test_dataframe.select(features_columns: _*)
 
+    dataframe.unpersist()
+
     val casted_train_dataframe = castDFToDouble(selected_features_train_dataframe, columns_to_cast)
     val casted_test_dataframe = castDFToDouble(selected_features_test_dataframe, columns_to_cast)
 
     val transformation_pipeline = new Pipeline().setStages(pipeline_stages).fit(casted_train_dataframe)
     val transformed_train_dataset = transformation_pipeline.transform(casted_train_dataframe)
+    transformed_train_dataset.cache()
     val transformed_test_dataset = transformation_pipeline.transform(casted_test_dataframe)
+    transformed_test_dataset.cache()
 
     val evaluator = new MulticlassClassificationEvaluator().setLabelCol("label")
       .setPredictionCol("prediction").setMetricName("accuracy")
 
     println(s"Number of features is ${features.count() - 1}")
     Seq(("SMV", new OneVsRest().setClassifier(new LinearSVC())), ("Decision Tree", new DecisionTreeClassifier()),
-      ("Naive Bayes", new NaiveBayes()), ("KNN", new KNNClassifier().setK(1)))
+      ("Naive Bayes", new NaiveBayes()), ("KNN", new KNNClassifier().setTopTreeSize(transformed_train_dataset.count().toInt / 500 + 1).setK(1)))
       .foreach {
 
         case (name, classi) =>
