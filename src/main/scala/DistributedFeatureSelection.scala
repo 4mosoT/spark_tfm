@@ -1,10 +1,8 @@
-import java.io
-
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.ml.classification._
 import org.apache.spark.ml.evaluation.MulticlassClassificationEvaluator
 import org.apache.spark.ml.feature.{OneHotEncoder, StringIndexer, VectorAssembler}
-import org.apache.spark.ml.{Pipeline, PipelineModel, PipelineStage}
+import org.apache.spark.ml.{Pipeline, PipelineStage}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.functions.{col, collect_set}
 import org.apache.spark.sql.{DataFrame, Row, SparkSession}
@@ -77,7 +75,7 @@ object DistributedFeatureSelection {
                      globalComplexityMeasure: (DataFrame, Broadcast[Map[Int, (Option[mutable.WrappedArray[String]], String)]], SparkContext, RDD[(Int, Seq[Any])], Int) => Double,
                      classifier: Option[PipelineStage], filter: String): Unit = {
     val init_time = System.currentTimeMillis()
-    val ss = SparkSession.builder().appName("distributed_feature_selection").master("local[*]").getOrCreate()
+    val ss = SparkSession.builder().appName("distributed_feature_selection").getOrCreate()
     ss.sparkContext.setLogLevel("ERROR")
     var dataframe = ss.read.option("maxColumns", "30000").csv(dataset_file)
     var test_dataframe = dataframe
