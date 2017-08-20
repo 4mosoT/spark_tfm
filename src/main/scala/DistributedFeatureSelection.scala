@@ -117,6 +117,7 @@ object DistributedFeatureSelection {
     //Map creation of attributes
     val RDD_columns = ss.sparkContext.parallelize(dataframe.columns)
     val RDD_inverse_attributes: RDD[(String, Int)] = RDD_columns.zipWithIndex.map { case (column_name, index) => column_name -> index.toInt }
+    RDD_inverse_attributes.cache()
     val inverse_attributes = RDD_inverse_attributes.collect().toMap
     val br_inverse_attributes = ss.sparkContext.broadcast(inverse_attributes)
 
@@ -131,7 +132,6 @@ object DistributedFeatureSelection {
     val categorical_attributes = dataframe.select(categorical_filter.map { c =>
       collect_set(c)
     }: _*).first().toSeq.zip(categorical_filter).map { case (values: mutable.WrappedArray[String], column_name) => inverse_attributes(column_name) -> (Some(values), column_name) }
-
 
     val numerical_attributes = RDD_inverse_attributes.map(_._1).subtract(ss.sparkContext.parallelize(categorical_attributes).map(_._2._2))
       .map(c_name => br_inverse_attributes.value(c_name) -> (None: Option[mutable.WrappedArray[String]], c_name))
@@ -198,6 +198,7 @@ object DistributedFeatureSelection {
     //We get the features that aren't in the votes set. That means features -> Votes = 0
     // ****Class column included****
     val selected_features_0_votes = RDD_inverse_attributes.map(_._1).subtract(votes.map(_._1))
+    RDD_inverse_attributes.unpersist()
 
     print("Features 0 votes: ")
     selected_features_0_votes.foreach(print)
