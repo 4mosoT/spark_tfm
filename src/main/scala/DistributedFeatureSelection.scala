@@ -105,8 +105,6 @@ object DistributedFeatureSelection {
 
     dataframe.cache()
 
-    //println(s"Train: ${dataframe.count()} Test: ${test_dataframe.count()} Time: ${System.currentTimeMillis() - init_time}\n")
-
     /** *****************************
       * Creation of attributes maps
       * *****************************/
@@ -148,9 +146,9 @@ object DistributedFeatureSelection {
       * **************************/
 
     val rounds = 5
-    val start_time = System.currentTimeMillis()
     if (vertical) println(s"*****Using vertical partitioning with ${overlap * 100}% overlap*****\n*****Using $filter algorithm*****")
     else println(s"*****Using horizontal partitioning*****\n*****Using $filter algorithm*****")
+    println(s"*****$rounds rounds and $numParts number of partitions*****")
 
     var transpose_input: RDD[(Int, Seq[Any])] = ss.sparkContext.emptyRDD[(Int, Seq[Any])]
     var times = ss.sparkContext.emptyRDD[Long]
@@ -161,30 +159,22 @@ object DistributedFeatureSelection {
         transpose_input = transposeRDD(dataframe.rdd)
         transpose_input.cache()
         for (round <- 1 to rounds) {
-          val start_round = System.currentTimeMillis()
-          println(s"Round: $round")
           val result = verticalPartitioningFeatureSelection(ss.sparkContext, shuffleRDD(transpose_input),
             br_attributes, br_inverse_attributes, class_index, numParts, filter, overlap)
           sub_votes = sub_votes ++ result.map(x => (x._1, x._2._1))
           times = times ++ result.map(x => x._2._2)
-          println(s"Round finished in: ${System.currentTimeMillis() - start_round}. ")
         }
       } else {
         for (round <- 1 to rounds) {
-          val start_round = System.currentTimeMillis()
-          println(s"Round: $round")
           val result = horizontalPartitioningFeatureSelection(ss.sparkContext, shuffleRDD(dataframe.rdd),
             br_attributes, br_inverse_attributes, class_index, numParts, filter)
           sub_votes = sub_votes ++ result.map(x => (x._1, x._2._1))
           times = times ++ result.map(x => x._2._2)
-          println(s"Round finished in: ${System.currentTimeMillis() - start_round}. ")
 
         }
       }
       sub_votes.reduceByKey(_ + _)
     }
-
-    println(s"Votes computation time:${System.currentTimeMillis() - start_time}")
 
     /** ******************************************
       * Computing 'Selection Features Threshold'
@@ -205,11 +195,9 @@ object DistributedFeatureSelection {
     val alpha = alpha_value
     var e_v = collection.mutable.ArrayBuffer[(Int, Double)]()
 
-    val start_comp = System.currentTimeMillis()
-    var compMeasure = globalComplexityMeasure(dataframe, br_attributes, ss.sparkContext, transpose_input, class_index)
-    println(s"\nComplexity Measurey Computation Time: ${System.currentTimeMillis() - start_comp}. Value $compMeasure\n")
 
 
+    var compMeasure = 0.0
     val step = if (vertical) 1 else 5
     for (a <- minVote to maxVote by step) {
       val starting_time = System.currentTimeMillis()
@@ -217,7 +205,7 @@ object DistributedFeatureSelection {
       val selected_features = selected_features_0_votes ++ votes.filter(_._2 < a).map(_._1)
 
       if (selected_features.count() > 1) {
-        println(s"Starting threshold computation with minVotes = $a / maxVotes = $maxVote with ${selected_features.count() - 1} features")
+        println(s"\nStarting threshold computation with minVotes = $a / maxVotes = $maxVote with ${selected_features.count() - 1} features")
         val selected_features_dataframe = dataframe.select(selected_features.collect().map(col): _*)
         val retained_feat_percent = (selected_features.count().toDouble / dataframe.columns.length) * 100
         if (classifier.isDefined) {
@@ -227,12 +215,16 @@ object DistributedFeatureSelection {
           val evaluator = new MulticlassClassificationEvaluator().setLabelCol("label")
             .setPredictionCol("prediction").setMetricName("accuracy")
           compMeasure = 1 - evaluator.evaluate(pipeline.transform(casted_dataframe))
+        }else{
+          val start_comp = System.currentTimeMillis()
+          compMeasure = globalComplexityMeasure(selected_features_dataframe, br_attributes, ss.sparkContext, transpose_input, class_index)
+          println(s"\n\t\tComplexity Measurey Computation Time: ${System.currentTimeMillis() - start_comp}.\n")
         }
 
         e_v += ((a, alpha * compMeasure + (1 - alpha) * retained_feat_percent))
 
         println(s"\tThreshold computation in ${System.currentTimeMillis() - starting_time} " +
-          s"\n\t\t Error: $compMeasure \n\t\t Retained Features Percent: $retained_feat_percent " +
+          s"\n\t\t Complexity Measure Value: $compMeasure \n\t\t Retained Features Percent: $retained_feat_percent " +
           s"\n\t\t EV Value = ${alpha * compMeasure + (1 - alpha) * retained_feat_percent} \n")
 
       }
@@ -241,48 +233,51 @@ object DistributedFeatureSelection {
     val selected_threshold = e_v.minBy(_._2)._1
     val features = selected_features_0_votes ++ votes.filter(_._2 < selected_threshold).map(_._1)
 
-    println(s"Total threshold computation in ${System.currentTimeMillis() - threshold_time}")
-    println(s"Max computation time by partition: ${times.max}")
-    println(s"Total execution time is ${System.currentTimeMillis() - init_time}\n")
+
+    println(s"Total threshold computation in ${System.currentTimeMillis() - threshold_time}\n")
+    println(s"\nTotal execution time is ${System.currentTimeMillis() - init_time}")
+    println(s"Computation time by partition stats: ${times.stats()}")
+    println(s"Number of features is ${features.count() - 1}")
+    println(s"Trainset: ${dataframe.count} Testset: ${test_dataframe.count}")
 
     /** ******************************************
       * Evaluate Models With Selected Features
       * ******************************************/
 
-    val evaluation_time = System.currentTimeMillis()
-    //Once we get the votes, we proceed to evaluate
-
-    val (pipeline_stages, columns_to_cast) = createPipeline(features, br_attributes, br_inverse_attributes, class_index, ss.sparkContext)
-    val features_columns = features.collect().map(col)
-
-    val selected_features_train_dataframe = dataframe.select(features_columns: _*)
-    val selected_features_test_dataframe = test_dataframe.select(features_columns: _*)
-
-    dataframe.unpersist()
-
-    val casted_train_dataframe = castDFToDouble(selected_features_train_dataframe, columns_to_cast)
-    val casted_test_dataframe = castDFToDouble(selected_features_test_dataframe, columns_to_cast)
-
-    val transformation_pipeline = new Pipeline().setStages(pipeline_stages).fit(casted_train_dataframe)
-    val transformed_train_dataset = transformation_pipeline.transform(casted_train_dataframe)
-    transformed_train_dataset.cache()
-    val transformed_test_dataset = transformation_pipeline.transform(casted_test_dataframe)
-    transformed_test_dataset.cache()
-
-    val evaluator = new MulticlassClassificationEvaluator().setLabelCol("label")
-      .setPredictionCol("prediction").setMetricName("accuracy")
-
-    println(s"Number of features is ${features.count() - 1}")
-    Seq(("SMV", new OneVsRest().setClassifier(new LinearSVC())), ("Decision Tree", new DecisionTreeClassifier()),
-      ("Naive Bayes", new NaiveBayes()), ("KNN", new KNNClassifier().setTopTreeSize(transformed_train_dataset.count().toInt / 500 + 1).setK(1)))
-      .foreach {
-
-        case (name, classi) =>
-
-          val accuracy = evaluator.evaluate(classi.fit(transformed_train_dataset).transform(transformed_test_dataset))
-          println(s"Accuracy for $name is $accuracy")
-
-      }
+//    val evaluation_time = System.currentTimeMillis()
+//    //Once we get the votes, we proceed to evaluate
+//
+//    val (pipeline_stages, columns_to_cast) = createPipeline(features, br_attributes, br_inverse_attributes, class_index, ss.sparkContext)
+//    val features_columns = features.collect().map(col)
+//
+//    val selected_features_train_dataframe = dataframe.select(features_columns: _*)
+//    val selected_features_test_dataframe = test_dataframe.select(features_columns: _*)
+//
+//    dataframe.unpersist()
+//
+//    val casted_train_dataframe = castDFToDouble(selected_features_train_dataframe, columns_to_cast)
+//    val casted_test_dataframe = castDFToDouble(selected_features_test_dataframe, columns_to_cast)
+//
+//    val transformation_pipeline = new Pipeline().setStages(pipeline_stages).fit(casted_train_dataframe)
+//    val transformed_train_dataset = transformation_pipeline.transform(casted_train_dataframe)
+//    transformed_train_dataset.cache()
+//    val transformed_test_dataset = transformation_pipeline.transform(casted_test_dataframe)
+//    transformed_test_dataset.cache()
+//
+//    val evaluator = new MulticlassClassificationEvaluator().setLabelCol("label")
+//      .setPredictionCol("prediction").setMetricName("accuracy")
+//
+//
+//    Seq(("SMV", new OneVsRest().setClassifier(new LinearSVC())), ("Decision Tree", new DecisionTreeClassifier()),
+//      ("Naive Bayes", new NaiveBayes()), ("KNN", new KNNClassifier().setTopTreeSize(transformed_train_dataset.count().toInt / 500 + 1).setK(1)))
+//      .foreach {
+//
+//        case (name, classi) =>
+//
+//          val accuracy = evaluator.evaluate(classi.fit(transformed_train_dataset).transform(transformed_test_dataset))
+//          println(s"Accuracy for $name is $accuracy")
+//
+//      }
 
 
     //      #For use with Weka library
@@ -290,7 +285,7 @@ object DistributedFeatureSelection {
     //      val selected_features_map = attributes.filterKeys(selected_inverse_features_map.values.toSeq.contains(_))
     //      WekaWrapper.createInstances(df, selected_features_map, selected_inverse_features_map, class_index)
 
-    println(s"Evaluation time is ${System.currentTimeMillis() - evaluation_time}\n")
+//    println(s"Evaluation time is ${System.currentTimeMillis() - evaluation_time}\n")
   }
 
 
@@ -469,12 +464,13 @@ object DistributedFeatureSelection {
 
 
     // ProportionclassMap => Class -> Proportion of class
+    val class_name = br_attributes.value(class_index)._2
     val samples = dataframe.count().toDouble
-    val br_proportionClassMap = sc.broadcast(dataframe.groupBy(dataframe.columns(class_index)).count().rdd.map(row => row(0) -> (row(1).asInstanceOf[Long] / samples.toDouble)).collect().toMap)
-    val class_column = sc.broadcast(dataframe.select(dataframe.columns(class_index)).rdd.map(_ (0)).collect())
+    val br_proportionClassMap = sc.broadcast(dataframe.groupBy(class_name).count().rdd.map(row => row(0) -> (row(1).asInstanceOf[Long] / samples.toDouble)).collect().toMap)
+    val class_column = sc.broadcast(dataframe.select(class_name).rdd.map(_ (0)).collect())
+    val br_columns = sc.broadcast(dataframe.columns)
 
-
-    val rdd = if (!transposedRDD.isEmpty) transposedRDD else transposeRDD(dataframe.drop(dataframe.columns(class_index)).rdd)
+    val rdd = if (!transposedRDD.isEmpty) transposedRDD.filter{ case (x,_) => br_columns.value.contains(br_attributes.value(x)._2) } else transposeRDD(dataframe.drop(class_name).rdd)
     val f1 = rdd.map {
       case (column_index, row) =>
         val zipped_row = row.zip(class_column.value)
@@ -531,9 +527,10 @@ object DistributedFeatureSelection {
   }
 
   def f2(dataframe: DataFrame, br_attributes: Broadcast[Map[Int, (Option[mutable.WrappedArray[String]], String)]], sc: SparkContext, transposedRDD: RDD[(Int, Seq[Any])], class_index: Int): Double = {
-
-    val class_column = sc.broadcast(dataframe.select(dataframe.columns(class_index)).rdd.map(_ (0)).collect())
-    val rdd = if (!transposedRDD.isEmpty) transposedRDD else transposeRDD(dataframe.drop(dataframe.columns(class_index)).rdd)
+    val class_name = br_attributes.value(class_index)._2
+    val class_column = sc.broadcast(dataframe.select(class_name).rdd.map(_ (0)).collect())
+    val br_columns = sc.broadcast(dataframe.columns)
+    val rdd = if (!transposedRDD.isEmpty) transposedRDD.filter{ case (x,_) => br_columns.value.contains(br_attributes.value(x)._2) } else transposeRDD(dataframe.drop(class_name).rdd)
 
 
     val f2 = rdd.map {
