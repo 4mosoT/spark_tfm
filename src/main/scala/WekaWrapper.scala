@@ -18,6 +18,7 @@ object WekaWrapper {
     //The list of attributes to create the Weka "Instances"
     val attributes_schema = new util.ArrayList[Attribute]()
     var class_data_index = 0
+
     df.columns.zipWithIndex.foreach { case (c_name, index) =>
       val column_index = inverse_attributes(c_name)
       if (column_index != class_index) {
@@ -65,28 +66,31 @@ object WekaWrapper {
 
     //The list of attributes to create the Weka "Instances"
     val attributes_schema = new util.ArrayList[Attribute]()
-
+    var class_data_index = 0
 
     // Getting the attributes and add to schema.
-    iter.head.toSeq.dropRight(1).zipWithIndex.foreach { case (_, index) =>
+    iter.head.toSeq.zipWithIndex.foreach { case (_, index) =>
       val (value, column_name) = attributes(index)
-      if (value.isDefined) {
-        val attribute_values = new util.ArrayList[String]()
-        attributes(index)._1.get.foreach(attribute_values.add)
-        attributes_schema.add(new Attribute(column_name, attribute_values))
+      if (index != class_index) {
+        if (value.isDefined) {
+          val attribute_values = new util.ArrayList[String]()
+          attributes(index)._1.get.foreach(attribute_values.add)
+          attributes_schema.add(new Attribute(column_name, attribute_values))
+        } else {
+          attributes_schema.add(new Attribute(column_name))
+        }
       } else {
-        attributes_schema.add(new Attribute(column_name))
+        val classValues = new util.ArrayList[String]()
+        attributes(class_index)._1.get.foreach(x => classValues.add(x.toString))
+        attributes_schema.add(new Attribute("class", classValues))
+        class_data_index = index
+
       }
     }
 
-    //Add classes to attributes
-    val classValues = new util.ArrayList[String]()
-    attributes(class_index)._1.get.foreach(x => classValues.add(x.toString))
-    attributes_schema.add(new Attribute("class", classValues))
-
     // Weka Instances
     val data = new Instances("Rel", attributes_schema, iter.size)
-    data.setClassIndex(attributes_schema.size() - 1)
+    data.setClassIndex(class_data_index)
 
     // Once we have the Instances structure, we add the data itself
     iter.foreach({ row =>
@@ -106,8 +110,10 @@ object WekaWrapper {
 
   def createInstancesFromTranspose(iter: Iterable[(Int, Seq[Any])], attributes: Map[Int, (Option[Seq[String]], String)],
                                    class_column: (Int, Seq[Any]), classes: Seq[String]): Instances = {
+
     //The list of attributes to create the Weka "Instances"
     val attributes_schema = new util.ArrayList[Attribute]()
+    var indexes = collection.mutable.ArrayBuffer[Int]()
 
     // Getting the attributes and add to schema. Since iter will only contain the columns to this partition
     // we need to iterate over it and get the info from attributes map
@@ -117,7 +123,9 @@ object WekaWrapper {
         val attribute_values = new util.ArrayList[String]()
         attributes(index)._1.get.foreach(attribute_values.add)
         attributes_schema.add(new Attribute(column_name, attribute_values))
+        indexes += index
       } else {
+        indexes += index
         attributes_schema.add(new Attribute(column_name))
       }
     }
@@ -128,15 +136,17 @@ object WekaWrapper {
     attributes_schema.add(new Attribute("class", classValues))
 
     // Weka Instances
+
     val data = new Instances("Rel", attributes_schema, iter.size)
     data.setClassIndex(attributes_schema.size - 1)
+
 
     //Add the data itself
     val rows = iter.map(_._2).transpose
     rows.foreach({ row =>
-      val instance = new DenseInstance(attributes_schema.size + 1)
+      val instance = new DenseInstance(attributes_schema.size)
       row.zipWithIndex.foreach({ case (value, index) =>
-        if (attributes(index)._1.isDefined) {
+        if (attributes(indexes(index))._1.isDefined) {
           instance.setValue(attributes_schema.get(index), value.asInstanceOf[String])
         } else {
           instance.setValue(attributes_schema.get(index), value.toString.toDouble)

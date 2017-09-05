@@ -75,9 +75,9 @@ object DistributedFeatureSelection {
                      globalComplexityMeasure: (DataFrame, Broadcast[Map[Int, (Option[mutable.WrappedArray[String]], String)]], SparkContext, RDD[(Int, Seq[Any])], Int) => Double,
                      classifier: Option[PipelineStage], filter: String): Unit = {
     val init_time = System.currentTimeMillis()
-    val ss = SparkSession.builder().appName("distributed_feature_selection").master("local[*]").getOrCreate()
+    val ss = SparkSession.builder().appName("distributed_feature_selection").getOrCreate()
     ss.sparkContext.setLogLevel("ERROR")
-    var dataframe = ss.read.option("maxColumns", "30000").csv(dataset_file).limit(1000)
+    var dataframe = ss.read.option("maxColumns", "30000").csv(dataset_file)
     var test_dataframe = dataframe
 
     // If there is not training set, we split the data maintaining class distribution. 2/3 train 1/3 test
@@ -198,7 +198,6 @@ object DistributedFeatureSelection {
     var e_v = collection.mutable.ArrayBuffer[(Int, Double)]()
 
 
-
     var compMeasure = 0.0
     val step = if (vertical) 1 else 5
     for (a <- minVote to maxVote by step) {
@@ -217,7 +216,7 @@ object DistributedFeatureSelection {
           val evaluator = new MulticlassClassificationEvaluator().setLabelCol("label")
             .setPredictionCol("prediction").setMetricName("accuracy")
           compMeasure = 1 - evaluator.evaluate(pipeline.transform(casted_dataframe))
-        }else{
+        } else {
           val start_comp = System.currentTimeMillis()
           compMeasure = globalComplexityMeasure(selected_features_dataframe, br_attributes, ss.sparkContext, transpose_input, class_index)
           println(s"\n\t\tComplexity Measurey Computation Time: ${System.currentTimeMillis() - start_comp}.\n")
@@ -282,10 +281,10 @@ object DistributedFeatureSelection {
       }
 
 
-//          #For use with Weka library
-//          val selected_inverse_features_map = inverse_attributes.filterKeys(selected_features.contains(_))
-//          val selected_features_map = attributes.filterKeys(selected_inverse_features_map.values.toSeq.contains(_))
-//          WekaWrapper.createInstances(df, selected_features_map, selected_inverse_features_map, class_index)
+    //          #For use with Weka library
+    //          val selected_inverse_features_map = inverse_attributes.filterKeys(selected_features.contains(_))
+    //          val selected_features_map = attributes.filterKeys(selected_inverse_features_map.values.toSeq.contains(_))
+    //          WekaWrapper.createInstances(df, selected_features_map, selected_inverse_features_map, class_index)
 
     println(s"Evaluation time is ${System.currentTimeMillis() - evaluation_time}\n")
   }
@@ -422,7 +421,7 @@ object DistributedFeatureSelection {
         attributes.value(original_attr_index)._1.isDefined && original_attr_index != class_index
     }
 
-    if (categorical_columns_filter.count > 1){
+    if (categorical_columns_filter.count > 1) {
       val stages_columns =
         categorical_columns_filter.map {
           cname =>
@@ -437,7 +436,7 @@ object DistributedFeatureSelection {
 
       (pipeline, columns_to_assemble)
 
-    }else{
+    } else {
 
       val columns_to_assemble: Array[String] = double_columns_to_assemble.collect()
       //Creation of pipeline // Transform class column from categorical to index //Assemble features
@@ -446,9 +445,6 @@ object DistributedFeatureSelection {
       (pipeline, columns_to_assemble)
 
     }
-
-
-
 
 
   }
@@ -472,7 +468,7 @@ object DistributedFeatureSelection {
     val class_column = sc.broadcast(dataframe.select(class_name).rdd.map(_ (0)).collect())
     val br_columns = sc.broadcast(dataframe.columns)
 
-    val rdd = if (!transposedRDD.isEmpty) transposedRDD.filter{ case (x,_) => br_columns.value.contains(br_attributes.value(x)._2) } else transposeRDD(dataframe.drop(class_name).rdd)
+    val rdd = if (!transposedRDD.isEmpty) transposedRDD.filter { case (x, _) => br_columns.value.contains(br_attributes.value(x)._2) } else transposeRDD(dataframe.drop(class_name).rdd)
     val f1 = rdd.map {
       case (column_index, row) =>
         val zipped_row = row.zip(class_column.value)
@@ -532,7 +528,7 @@ object DistributedFeatureSelection {
     val class_name = br_attributes.value(class_index)._2
     val class_column = sc.broadcast(dataframe.select(class_name).rdd.map(_ (0)).collect())
     val br_columns = sc.broadcast(dataframe.columns)
-    val rdd = if (!transposedRDD.isEmpty) transposedRDD.filter{ case (x,_) => br_columns.value.contains(br_attributes.value(x)._2) } else transposeRDD(dataframe.drop(class_name).rdd)
+    val rdd = if (!transposedRDD.isEmpty) transposedRDD.filter { case (x, _) => br_columns.value.contains(br_attributes.value(x)._2) } else transposeRDD(dataframe.drop(class_name).rdd)
 
 
     val f2 = rdd.map {
@@ -585,7 +581,7 @@ object DistributedFeatureSelection {
             }
           }
         }
-      result
+        result
     }
     f2.sum()
 
