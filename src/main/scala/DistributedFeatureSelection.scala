@@ -78,6 +78,12 @@ object DistributedFeatureSelection {
     val ss = SparkSession.builder().appName("distributed_feature_selection").getOrCreate()
     ss.sparkContext.setLogLevel("ERROR")
     var dataframe = ss.read.option("maxColumns", "30000").csv(dataset_file)
+
+    if (class_is_first) {
+      val reordered_columns: Array[String] = dataframe.columns.drop(1) :+ dataframe.columns(0)
+      dataframe = dataframe.select(reordered_columns.head, reordered_columns.tail: _*)
+    }
+
     var test_dataframe = dataframe
 
     // If there is not training set, we split the data maintaining class distribution. 2/3 train 1/3 test
@@ -101,8 +107,11 @@ object DistributedFeatureSelection {
     } else {
 
       test_dataframe = ss.read.option("maxColumns", "30000").csv(dataset_test.get)
+      if (class_is_first) {
+        val reordered_columns: Array[String] = dataframe.columns.drop(1) :+ dataframe.columns(0)
+        dataframe = test_dataframe.select(reordered_columns.head, reordered_columns.tail: _*)
+      }
     }
-
     dataframe.cache()
 
     /** *****************************
@@ -110,7 +119,9 @@ object DistributedFeatureSelection {
       * *****************************/
 
     val map_time = System.currentTimeMillis()
-    val class_index = if (class_is_first) 0 else dataframe.columns.length - 1
+    //    val class_index = if (class_is_first) 0 else dataframe.columns.length - 1
+
+    val class_index = dataframe.columns.length - 1
 
     //Map creation of attributes
     val RDD_columns = ss.sparkContext.parallelize(dataframe.columns)
@@ -181,8 +192,6 @@ object DistributedFeatureSelection {
       * ******************************************/
 
     val votes_length = votes.count()
-    print(votes.collect().mkString(","), votes_length)
-
     val threshold_time = System.currentTimeMillis()
     val avg_votes = votes.map(_._2).sum / votes_length
     val std_votes = math.sqrt(votes.map(votes => math.pow(votes._2 - avg_votes, 2)).sum / votes_length)
