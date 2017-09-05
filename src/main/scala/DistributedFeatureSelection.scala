@@ -312,6 +312,7 @@ object DistributedFeatureSelection {
       })
       .groupByKey().flatMap { case (_, iter) =>
       val start_time = System.currentTimeMillis()
+      //TODO: The same schema can be used for all rounds
       val data = WekaWrapper.createInstances(iter, br_attributes.value, class_index)
       val filtered_data = Filter.useFilter(data, WekaWrapper.filterAttributes(data, filter))
       val selected_attributes = WekaWrapper.getAttributes(filtered_data)
