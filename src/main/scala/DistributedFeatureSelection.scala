@@ -244,48 +244,48 @@ object DistributedFeatureSelection {
       * Evaluate Models With Selected Features
       * ******************************************/
 
-//    val evaluation_time = System.currentTimeMillis()
-//    //Once we get the votes, we proceed to evaluate
-//
-//    val (pipeline_stages, columns_to_cast) = createPipeline(features, br_attributes, br_inverse_attributes, class_index, ss.sparkContext)
-//    val features_columns = features.collect().map(col)
-//
-//    val selected_features_train_dataframe = dataframe.select(features_columns: _*)
-//    val selected_features_test_dataframe = test_dataframe.select(features_columns: _*)
-//
-//    dataframe.unpersist()
-//
-//    val casted_train_dataframe = castDFToDouble(selected_features_train_dataframe, columns_to_cast)
-//    val casted_test_dataframe = castDFToDouble(selected_features_test_dataframe, columns_to_cast)
-//
-//    val transformation_pipeline = new Pipeline().setStages(pipeline_stages).fit(casted_train_dataframe)
-//    val transformed_train_dataset = transformation_pipeline.transform(casted_train_dataframe)
-//    transformed_train_dataset.cache()
-//    val transformed_test_dataset = transformation_pipeline.transform(casted_test_dataframe)
-//    transformed_test_dataset.cache()
-//
-//    val evaluator = new MulticlassClassificationEvaluator().setLabelCol("label")
-//      .setPredictionCol("prediction").setMetricName("accuracy")
-//
-//
-//    Seq(("SMV", new OneVsRest().setClassifier(new LinearSVC())), ("Decision Tree", new DecisionTreeClassifier()),
-//      ("Naive Bayes", new NaiveBayes()), ("KNN", new KNNClassifier().setTopTreeSize(transformed_train_dataset.count().toInt / 500 + 1).setK(1)))
-//      .foreach {
-//
-//        case (name, classi) =>
-//
-//          val accuracy = evaluator.evaluate(classi.fit(transformed_train_dataset).transform(transformed_test_dataset))
-//          println(s"Accuracy for $name is $accuracy")
-//
-//      }
+    val evaluation_time = System.currentTimeMillis()
+    //Once we get the votes, we proceed to evaluate
+
+    val (pipeline_stages, columns_to_cast) = createPipeline(features, br_attributes, br_inverse_attributes, class_index, ss.sparkContext)
+    val features_columns = features.collect().map(col)
+
+    val selected_features_train_dataframe = dataframe.select(features_columns: _*)
+    val selected_features_test_dataframe = test_dataframe.select(features_columns: _*)
+
+    dataframe.unpersist()
+
+    val casted_train_dataframe = castDFToDouble(selected_features_train_dataframe, columns_to_cast)
+    val casted_test_dataframe = castDFToDouble(selected_features_test_dataframe, columns_to_cast)
+
+    val transformation_pipeline = new Pipeline().setStages(pipeline_stages).fit(casted_train_dataframe)
+    val transformed_train_dataset = transformation_pipeline.transform(casted_train_dataframe)
+    transformed_train_dataset.cache()
+    val transformed_test_dataset = transformation_pipeline.transform(casted_test_dataframe)
+    transformed_test_dataset.cache()
+
+    val evaluator = new MulticlassClassificationEvaluator().setLabelCol("label")
+      .setPredictionCol("prediction").setMetricName("accuracy")
 
 
-    //      #For use with Weka library
-    //      val selected_inverse_features_map = inverse_attributes.filterKeys(selected_features.contains(_))
-    //      val selected_features_map = attributes.filterKeys(selected_inverse_features_map.values.toSeq.contains(_))
-    //      WekaWrapper.createInstances(df, selected_features_map, selected_inverse_features_map, class_index)
+    Seq(("SMV", new OneVsRest().setClassifier(new LinearSVC())), ("Decision Tree", new DecisionTreeClassifier()),
+      ("Naive Bayes", new NaiveBayes()), ("KNN", new KNNClassifier().setTopTreeSize(transformed_train_dataset.count().toInt / 500 + 1).setK(1)))
+      .foreach {
 
-//    println(s"Evaluation time is ${System.currentTimeMillis() - evaluation_time}\n")
+        case (name, classi) =>
+
+          val accuracy = evaluator.evaluate(classi.fit(transformed_train_dataset).transform(transformed_test_dataset))
+          println(s"Accuracy for $name is $accuracy")
+
+      }
+
+
+//          #For use with Weka library
+//          val selected_inverse_features_map = inverse_attributes.filterKeys(selected_features.contains(_))
+//          val selected_features_map = attributes.filterKeys(selected_inverse_features_map.values.toSeq.contains(_))
+//          WekaWrapper.createInstances(df, selected_features_map, selected_inverse_features_map, class_index)
+
+    println(s"Evaluation time is ${System.currentTimeMillis() - evaluation_time}\n")
   }
 
 
