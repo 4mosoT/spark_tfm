@@ -75,9 +75,9 @@ object DistributedFeatureSelection {
                      globalComplexityMeasure: (DataFrame, Broadcast[Map[Int, (Option[mutable.WrappedArray[String]], String)]], SparkContext, RDD[(Int, Seq[Any])], Int) => Double,
                      classifier: Option[PipelineStage], filter: String): Unit = {
     val init_time = System.currentTimeMillis()
-    val ss = SparkSession.builder().appName("distributed_feature_selection").getOrCreate()
+    val ss = SparkSession.builder().appName("distributed_feature_selection").master("local[*]").getOrCreate()
     ss.sparkContext.setLogLevel("ERROR")
-    var dataframe = ss.read.option("maxColumns", "30000").csv(dataset_file)
+    var dataframe = ss.read.option("maxColumns", "30000").csv(dataset_file).limit(1000)
     var test_dataframe = dataframe
 
     // If there is not training set, we split the data maintaining class distribution. 2/3 train 1/3 test
@@ -181,6 +181,8 @@ object DistributedFeatureSelection {
       * ******************************************/
 
     val votes_length = votes.count()
+    print(votes.collect().mkString(","), votes_length)
+
     val threshold_time = System.currentTimeMillis()
     val avg_votes = votes.map(_._2).sum / votes_length
     val std_votes = math.sqrt(votes.map(votes => math.pow(votes._2 - avg_votes, 2)).sum / votes_length)
