@@ -75,7 +75,7 @@ object DistributedFeatureSelection {
                      globalComplexityMeasure: (DataFrame, Broadcast[Map[Int, (Option[mutable.WrappedArray[String]], String)]], SparkContext, RDD[(Int, Seq[Any])], Int) => Double,
                      classifier: Option[PipelineStage], filter: String): Unit = {
     val init_time = System.currentTimeMillis()
-    val ss = SparkSession.builder().appName("distributed_feature_selection").getOrCreate()
+    val ss = SparkSession.builder().appName("distributed_feature_selection").master("local[*]").getOrCreate()
     ss.sparkContext.setLogLevel("ERROR")
     var dataframe = ss.read.option("maxColumns", "30000").csv(dataset_file)
 
@@ -108,8 +108,8 @@ object DistributedFeatureSelection {
 
       test_dataframe = ss.read.option("maxColumns", "30000").csv(dataset_test.get)
       if (class_is_first) {
-        val reordered_columns: Array[String] = dataframe.columns.drop(1) :+ dataframe.columns(0)
-        dataframe = test_dataframe.select(reordered_columns.head, reordered_columns.tail: _*)
+        val reordered_columns: Array[String] = test_dataframe.columns.drop(1) :+ test_dataframe.columns(0)
+        test_dataframe = test_dataframe.select(reordered_columns.head, reordered_columns.tail: _*)
       }
     }
     dataframe.cache()
@@ -323,6 +323,7 @@ object DistributedFeatureSelection {
       val start_time = System.currentTimeMillis()
       //TODO: The same schema can be used for all rounds
       val data = WekaWrapper.createInstances(iter, br_attributes.value, class_index)
+      WekaWrapper.saveInstances(data, "test")
       val filtered_data = Filter.useFilter(data, WekaWrapper.filterAttributes(data, filter))
       val selected_attributes = WekaWrapper.getAttributes(filtered_data)
 
