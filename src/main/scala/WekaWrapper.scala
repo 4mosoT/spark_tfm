@@ -228,7 +228,6 @@ object WekaWrapper {
     var filter = new AttributeSelection
     val eval = new CfsSubsetEval
     val search = new GreedyStepwise
-    search.setSearchBackwards(true)
     filter.setEvaluator(eval)
     filter.setSearch(search)
     filter.setInputFormat(data)
