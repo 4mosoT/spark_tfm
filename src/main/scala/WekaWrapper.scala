@@ -61,15 +61,14 @@ object WekaWrapper {
     data
   }
 
-
-  def createInstances(iter: Iterable[Row], attributes: Map[Int, (Option[Seq[String]], String)], class_index: Int): Instances = {
+  def attributesSchema(row: Row, attributes: Map[Int, (Option[Seq[String]], String)], class_index: Int): (util.ArrayList[Attribute], Int) = {
 
     //The list of attributes to create the Weka "Instances"
     val attributes_schema = new util.ArrayList[Attribute]()
     var class_data_index = 0
 
     // Getting the attributes and add to schema.
-    iter.head.toSeq.zipWithIndex.foreach { case (_, index) =>
+    row.toSeq.zipWithIndex.foreach { case (_, index) =>
       val (value, column_name) = attributes(index)
       if (index != class_index) {
         if (value.isDefined) {
@@ -87,6 +86,39 @@ object WekaWrapper {
 
       }
     }
+
+    (attributes_schema, class_data_index)
+
+  }
+
+
+  def createInstancesFromSchema(iter: Iterable[Row], attributes: Map[Int, (Option[Seq[String]], String)],
+                                attributes_schema: util.ArrayList[Attribute], class_data_index: Int): Instances = {
+
+    // Weka Instances
+    val data = new Instances("Rel", attributes_schema, iter.size)
+    data.setClassIndex(class_data_index)
+
+    // Once we have the Instances structure, we add the data itself
+    iter.foreach({ row =>
+      val instance = new DenseInstance(attributes_schema.size())
+      row.toSeq.zipWithIndex.foreach({ case (value, index) =>
+        if (attributes(index)._1.isDefined) {
+          instance.setValue(attributes_schema.get(index), value.asInstanceOf[String])
+        } else {
+          instance.setValue(attributes_schema.get(index), value.toString.toDouble)
+        }
+      })
+      data.add(instance)
+    })
+
+    data
+  }
+
+
+  def createInstances(iter: Iterable[Row], attributes: Map[Int, (Option[Seq[String]], String)], class_index: Int): Instances = {
+
+    val (attributes_schema, class_data_index) = attributesSchema(iter.head, attributes, class_index)
 
     // Weka Instances
     val data = new Instances("Rel", attributes_schema, iter.size)
