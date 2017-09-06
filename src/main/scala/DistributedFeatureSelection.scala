@@ -172,9 +172,12 @@ object DistributedFeatureSelection {
       if (vertical) {
         transpose_input = transposeRDD(dataframe.rdd)
         transpose_input.cache()
+        // Get the class column
+        val br_class_column = ss.sparkContext.broadcast(transpose_input.filter { case (columnindex, _) => columnindex == class_index }.first())
+
         for (round <- 1 to rounds) {
           val result = verticalPartitioningFeatureSelection(ss.sparkContext, shuffleRDD(transpose_input),
-            br_attributes, br_inverse_attributes, class_index, numParts, filter, overlap)
+            br_class_column, br_attributes, br_inverse_attributes, class_index, numParts, filter, overlap)
           sub_votes = sub_votes ++ result.map(x => (x._1, x._2._1))
           times = times ++ result.map(x => x._2._2)
         }
@@ -350,7 +353,7 @@ object DistributedFeatureSelection {
   }
 
 
-  def verticalPartitioningFeatureSelection(sc: SparkContext, transposed: RDD[(Int, Seq[Any])],
+  def verticalPartitioningFeatureSelection(sc: SparkContext, transposed: RDD[(Int, Seq[Any])], br_class_column: Broadcast[(Int, Seq[Any])],
                                            br_attributes: Broadcast[Map[Int, (Option[mutable.WrappedArray[String]], String)]], br_inverse_attributes: Broadcast[Map[String, Int]],
                                            class_index: Int, numParts: Int, filter: String, overlap: Double = 0): RDD[(String, (Int, Long))] = {
 
@@ -364,8 +367,7 @@ object DistributedFeatureSelection {
      }
     val br_overlapping = sc.broadcast(overlapping.collect().toIterable)
 
-    // Get the class column
-    val br_class_column = sc.broadcast(transposed.filter { case (columnindex, _) => columnindex == class_index }.first())
+
 
     //Remove the class column and assign a partition to each column
     transposed.subtract(overlapping).filter { case (columnindex, _) => columnindex != class_index }
