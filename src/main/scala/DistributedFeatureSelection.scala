@@ -10,7 +10,7 @@ import org.apache.spark.sql.functions.{col, collect_set}
 import org.apache.spark.sql.{DataFrame, Row, SparkSession}
 import org.apache.spark.{HashPartitioner, SparkContext}
 import org.rogach.scallop.{ScallopConf, ScallopOption, Subcommand}
-import weka.core.Attribute
+import weka.core.{Attribute, Instances}
 import weka.filters.Filter
 
 import scala.collection.mutable
@@ -80,7 +80,7 @@ object DistributedFeatureSelection {
     val init_time = System.currentTimeMillis()
     val ss = SparkSession.builder().appName("distributed_feature_selection").master("local[*]").getOrCreate()
     ss.sparkContext.setLogLevel("ERROR")
-    var dataframe = ss.read.option("maxColumns", "30000").csv(dataset_file)
+    var dataframe = ss.read.option("maxColumns", "30000").csv(dataset_file).limit(600)
 
     if (class_is_first) {
       val reordered_columns: Array[String] = dataframe.columns.drop(1) :+ dataframe.columns(0)
@@ -183,8 +183,6 @@ object DistributedFeatureSelection {
         val (schema, class_schema_index) = WekaWrapper.attributesSchema(first_row, attributes, class_index)
         val br_schema = ss.sparkContext.broadcast(schema)
         for (round <- 1 to rounds) {
-          //          val result = horizontalPartitioningFeatureSelection(ss.sparkContext, shuffleRDD(dataframe.rdd),
-          //            br_attributes, br_inverse_attributes, class_index, numParts, filter)
           val result = horizontalPartitioningFeatureSelectionCombiner(ss.sparkContext, shuffleRDD(dataframe.rdd),
             br_attributes, br_inverse_attributes, class_index, numParts, filter, br_schema, class_schema_index)
           sub_votes = sub_votes ++ result.map(x => (x._1, x._2._1))
@@ -236,7 +234,7 @@ object DistributedFeatureSelection {
         } else {
           val start_comp = System.currentTimeMillis()
           compMeasure = globalComplexityMeasure(selected_features_dataframe, br_attributes, ss.sparkContext, transpose_input, class_index)
-          println(s"\n\t\tComplexity Measurey Computation Time: ${System.currentTimeMillis() - start_comp}.\n")
+          println(s"\n\tComplexity Measure Computation Time: ${System.currentTimeMillis() - start_comp}.")
         }
 
         e_v += ((a, alpha * compMeasure + (1 - alpha) * retained_feat_percent))
@@ -262,48 +260,48 @@ object DistributedFeatureSelection {
       * Evaluate Models With Selected Features
       * ******************************************/
 
-//    val evaluation_time = System.currentTimeMillis()
-//    //Once we get the votes, we proceed to evaluate
-//
-//    val (pipeline_stages, columns_to_cast) = createPipeline(features, br_attributes, br_inverse_attributes, class_index, ss.sparkContext)
-//    val features_columns = features.collect().map(col)
-//
-//    val selected_features_train_dataframe = dataframe.select(features_columns: _*)
-//    val selected_features_test_dataframe = test_dataframe.select(features_columns: _*)
-//
-//    dataframe.unpersist()
-//
-//    val casted_train_dataframe = castDFToDouble(selected_features_train_dataframe, columns_to_cast)
-//    val casted_test_dataframe = castDFToDouble(selected_features_test_dataframe, columns_to_cast)
-//
-//    val transformation_pipeline = new Pipeline().setStages(pipeline_stages).fit(casted_train_dataframe)
-//    val transformed_train_dataset = transformation_pipeline.transform(casted_train_dataframe)
-//    transformed_train_dataset.cache()
-//    val transformed_test_dataset = transformation_pipeline.transform(casted_test_dataframe)
-//    transformed_test_dataset.cache()
-//
-//    val evaluator = new MulticlassClassificationEvaluator().setLabelCol("label")
-//      .setPredictionCol("prediction").setMetricName("accuracy")
-//
-//
-//    Seq(("SMV", new OneVsRest().setClassifier(new LinearSVC())), ("Decision Tree", new DecisionTreeClassifier()),
-//      ("Naive Bayes", new NaiveBayes()), ("KNN", new KNNClassifier().setTopTreeSize(transformed_train_dataset.count().toInt / 500 + 1).setK(1)))
-//      .foreach {
-//
-//        case (name, classi) =>
-//
-//          val accuracy = evaluator.evaluate(classi.fit(transformed_train_dataset).transform(transformed_test_dataset))
-//          println(s"Accuracy for $name is $accuracy")
-//
-//      }
-//
-//
-//    //          #For use with Weka library
-//    //          val selected_inverse_features_map = inverse_attributes.filterKeys(selected_features.contains(_))
-//    //          val selected_features_map = attributes.filterKeys(selected_inverse_features_map.values.toSeq.contains(_))
-//    //          WekaWrapper.createInstances(df, selected_features_map, selected_inverse_features_map, class_index)
-//
-//    println(s"Evaluation time is ${System.currentTimeMillis() - evaluation_time}\n")
+    //    val evaluation_time = System.currentTimeMillis()
+    //    //Once we get the votes, we proceed to evaluate
+    //
+    //    val (pipeline_stages, columns_to_cast) = createPipeline(features, br_attributes, br_inverse_attributes, class_index, ss.sparkContext)
+    //    val features_columns = features.collect().map(col)
+    //
+    //    val selected_features_train_dataframe = dataframe.select(features_columns: _*)
+    //    val selected_features_test_dataframe = test_dataframe.select(features_columns: _*)
+    //
+    //    dataframe.unpersist()
+    //
+    //    val casted_train_dataframe = castDFToDouble(selected_features_train_dataframe, columns_to_cast)
+    //    val casted_test_dataframe = castDFToDouble(selected_features_test_dataframe, columns_to_cast)
+    //
+    //    val transformation_pipeline = new Pipeline().setStages(pipeline_stages).fit(casted_train_dataframe)
+    //    val transformed_train_dataset = transformation_pipeline.transform(casted_train_dataframe)
+    //    transformed_train_dataset.cache()
+    //    val transformed_test_dataset = transformation_pipeline.transform(casted_test_dataframe)
+    //    transformed_test_dataset.cache()
+    //
+    //    val evaluator = new MulticlassClassificationEvaluator().setLabelCol("label")
+    //      .setPredictionCol("prediction").setMetricName("accuracy")
+    //
+    //
+    //    Seq(("SMV", new OneVsRest().setClassifier(new LinearSVC())), ("Decision Tree", new DecisionTreeClassifier()),
+    //      ("Naive Bayes", new NaiveBayes()), ("KNN", new KNNClassifier().setTopTreeSize(transformed_train_dataset.count().toInt / 500 + 1).setK(1)))
+    //      .foreach {
+    //
+    //        case (name, classi) =>
+    //
+    //          val accuracy = evaluator.evaluate(classi.fit(transformed_train_dataset).transform(transformed_test_dataset))
+    //          println(s"Accuracy for $name is $accuracy")
+    //
+    //      }
+    //
+    //
+    //    //          #For use with Weka library
+    //    //          val selected_inverse_features_map = inverse_attributes.filterKeys(selected_features.contains(_))
+    //    //          val selected_features_map = attributes.filterKeys(selected_inverse_features_map.values.toSeq.contains(_))
+    //    //          WekaWrapper.createInstances(df, selected_features_map, selected_inverse_features_map, class_index)
+    //
+    //    println(s"Evaluation time is ${System.currentTimeMillis() - evaluation_time}\n")
   }
 
 
@@ -329,7 +327,6 @@ object DistributedFeatureSelection {
       })
       .groupByKey().flatMap { case (_, iter) =>
       val start_time = System.currentTimeMillis()
-      //TODO: The same schema can be used for all rounds
       val data = WekaWrapper.createInstances(iter, br_attributes.value, class_index)
       WekaWrapper.saveInstances(data, "test")
       val filtered_data = Filter.useFilter(data, WekaWrapper.filterAttributes(data, filter))
@@ -346,7 +343,7 @@ object DistributedFeatureSelection {
   def horizontalPartitioningFeatureSelectionCombiner(sc: SparkContext, input: RDD[Row],
                                                      br_attributes: Broadcast[Map[Int, (Option[mutable.WrappedArray[String]], String)]], br_inverse_attributes: Broadcast[Map[String, Int]],
                                                      class_index: Int, numParts: Int, filter: String,
-                                                     attributes_schema: Broadcast[util.ArrayList[Attribute]],
+                                                     br_attributes_schema: Broadcast[util.ArrayList[Attribute]],
                                                      class_schema_index: Int): RDD[(String, (Int, Long))] = {
 
     /** Horizontally partition selection features */
@@ -357,24 +354,30 @@ object DistributedFeatureSelection {
         // Add an index for each subset (keys)
         case (_, value) => value.zipWithIndex
       })
-      .map({
+      .map {
         // Get the partition number for each row and make it the new key
-        case (row, index) => (index % numParts, row)
-      })
-      .groupByKey().flatMap { case (_, iter) =>
-      val start_time = System.currentTimeMillis()
-      val data = WekaWrapper.createInstancesFromSchema(iter, br_attributes.value, attributes_schema.value,class_schema_index)
-      val filtered_data = Filter.useFilter(data, WekaWrapper.filterAttributes(data, filter))
-      val selected_attributes = WekaWrapper.getAttributes(filtered_data)
+        case (row: Row, index: Int) => (index % numParts, row)
+      }
+      .combineByKey(
+        (row: Row) => {
+          val data = new Instances("Rel", br_attributes_schema.value, 0)
+          data.setClassIndex(class_schema_index)
+          WekaWrapper.addRowToInstances(data, br_attributes.value, br_attributes_schema.value, row)
+        },
+        (inst: Instances, row: Row) => WekaWrapper.addRowToInstances(inst, br_attributes.value, br_attributes_schema.value, row),
+        (inst1: Instances, inst2: Instances) => WekaWrapper.mergeInstances(inst1, inst2)
 
-      // Getting the diff we can obtain the features to increase the votes and taking away the class
-      (br_inverse_attributes.value.keySet.diff(selected_attributes) - br_attributes.value(class_index)._2).map((_, (1, System.currentTimeMillis() - start_time)))
+      ).flatMap {
+      case (_, inst) =>
+        val start_time = System.currentTimeMillis()
+        val filtered_data = Filter.useFilter(inst, WekaWrapper.filterAttributes(inst, filter))
+        val selected_attributes = WekaWrapper.getAttributes(filtered_data)
+        (br_inverse_attributes.value.keySet.diff(selected_attributes) - br_attributes.value(class_index)._2).map((_, (1, System.currentTimeMillis() - start_time)))
 
     }.reduceByKey((t1, t2) => (t1._1 + t2._1, math.max(t1._2, t2._2)))
 
+
   }
-
-
 
 
   def verticalPartitioningFeatureSelection(sc: SparkContext, transposed: RDD[(Int, Seq[Any])],

@@ -121,7 +121,7 @@ object WekaWrapper {
     val (attributes_schema, class_data_index) = attributesSchema(iter.head, attributes, class_index)
 
     // Weka Instances
-    val data = new Instances("Rel", attributes_schema, iter.size)
+    val data = new Instances("Rel", attributes_schema, 0)
     data.setClassIndex(class_data_index)
 
     // Once we have the Instances structure, we add the data itself
@@ -172,7 +172,6 @@ object WekaWrapper {
     val data = new Instances("Rel", attributes_schema, iter.size)
     data.setClassIndex(attributes_schema.size - 1)
 
-
     //Add the data itself
     val rows = iter.map(_._2).transpose
     rows.foreach({ row =>
@@ -197,6 +196,31 @@ object WekaWrapper {
 
   }
 
+  def addRowToInstances(data: Instances, attributes: Map[Int, (Option[Seq[String]], String)], attributes_schema: util.ArrayList[Attribute], row: Row): Instances = {
+
+    val instance = new DenseInstance(attributes_schema.size())
+    row.toSeq.zipWithIndex.foreach({ case (value, index) =>
+      if (attributes(index)._1.isDefined) {
+        instance.setValue(attributes_schema.get(index), value.asInstanceOf[String])
+      } else {
+        instance.setValue(attributes_schema.get(index), value.toString.toDouble)
+      }
+    })
+    data.add(instance)
+
+    data
+
+  }
+
+  def mergeInstances(inst1: Instances, inst2: Instances): Instances = {
+
+    for (index <- 0 until inst1.size()) {
+      inst2.add(inst1.instance(index))
+    }
+    inst2.compactify()
+    inst2
+
+  }
 
   def filterAttributes(data: Instances, algorithm: String): AttributeSelection = {
 
