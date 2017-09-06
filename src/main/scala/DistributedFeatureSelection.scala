@@ -80,7 +80,7 @@ object DistributedFeatureSelection {
     val init_time = System.currentTimeMillis()
     val ss = SparkSession.builder().appName("distributed_feature_selection").master("local[*]").getOrCreate()
     ss.sparkContext.setLogLevel("ERROR")
-    var dataframe = ss.read.option("maxColumns", "30000").csv(dataset_file).limit(600)
+    var dataframe = ss.read.option("maxColumns", "30000").csv(dataset_file)
 
     if (class_is_first) {
       val reordered_columns: Array[String] = dataframe.columns.drop(1) :+ dataframe.columns(0)
@@ -349,7 +349,7 @@ object DistributedFeatureSelection {
     /** Horizontally partition selection features */
 
 
-    input.map(row => (row.get(row.length - 1), row)).groupByKey()
+    val rdd = input.map(row => (row.get(row.length - 1), row)).groupByKey()
       .flatMap({
         // Add an index for each subset (keys)
         case (_, value) => value.zipWithIndex
@@ -367,14 +367,17 @@ object DistributedFeatureSelection {
         (inst: Instances, row: Row) => WekaWrapper.addRowToInstances(inst, br_attributes.value, br_attributes_schema.value, row),
         (inst1: Instances, inst2: Instances) => WekaWrapper.mergeInstances(inst1, inst2)
 
-      ).flatMap {
+      )
+      .flatMap {
       case (_, inst) =>
         val start_time = System.currentTimeMillis()
         val filtered_data = Filter.useFilter(inst, WekaWrapper.filterAttributes(inst, filter))
         val selected_attributes = WekaWrapper.getAttributes(filtered_data)
         (br_inverse_attributes.value.keySet.diff(selected_attributes) - br_attributes.value(class_index)._2).map((_, (1, System.currentTimeMillis() - start_time)))
 
-    }.reduceByKey((t1, t2) => (t1._1 + t2._1, math.max(t1._2, t2._2)))
+    }
+      println(rdd.collectAsMap())
+      rdd.reduceByKey((t1, t2) => (t1._1 + t2._1, math.max(t1._2, t2._2)))
 
 
   }
