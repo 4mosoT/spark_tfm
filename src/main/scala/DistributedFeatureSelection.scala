@@ -158,7 +158,7 @@ object DistributedFeatureSelection {
     /** **************************
       * Getting the Votes vector.
       * **************************/
-
+    val start_votes_vector_time = System.currentTimeMillis()
     val rounds = 5
     if (vertical) println(s"*****Using vertical partitioning with ${overlap * 100}% overlap*****\n*****Using $filter algorithm*****")
     else println(s"*****Using horizontal partitioning*****\n*****Using $filter algorithm*****")
@@ -194,6 +194,7 @@ object DistributedFeatureSelection {
       }
       sub_votes.reduceByKey(_ + _)
     }
+    println(s"Vector votes time is: ${System.currentTimeMillis() - start_votes_vector_time}")
 
     /** ******************************************
       * Computing 'Selection Features Threshold'
@@ -319,7 +320,6 @@ object DistributedFeatureSelection {
 
     /** Horizontally partition selection features */
 
-
     val rdd = input.map(row => (row.get(row.length - 1), row)).groupByKey()
       .flatMap({
         // Add an index for each subset (keys)
@@ -339,15 +339,15 @@ object DistributedFeatureSelection {
         (inst1: Instances, inst2: Instances) => WekaWrapper.mergeInstances(inst1, inst2)
 
       )
-      .flatMap {
+      print(rdd.count())
+      rdd.flatMap {
         case (_, inst) =>
           val start_time = System.currentTimeMillis()
           val filtered_data = Filter.useFilter(inst, WekaWrapper.filterAttributes(inst, filter))
           val selected_attributes = WekaWrapper.getAttributes(filtered_data)
           (br_inverse_attributes.value.keySet.diff(selected_attributes) - br_attributes.value(class_index)._2).map((_, (1, System.currentTimeMillis() - start_time)))
 
-      }
-    rdd.reduceByKey((t1, t2) => (t1._1 + t2._1, math.max(t1._2, t2._2)))
+      }.reduceByKey((t1, t2) => (t1._1 + t2._1, math.max(t1._2, t2._2)))
 
 
   }
@@ -364,10 +364,8 @@ object DistributedFeatureSelection {
     var overlapping: RDD[(Int, Seq[Any])] = sc.emptyRDD[(Int, Seq[Any])]
     if (overlap > 0) {
       overlapping = transposed.sample(withReplacement = false, overlap)
-     }
+    }
     val br_overlapping = sc.broadcast(overlapping.collect().toIterable)
-
-
 
     //Remove the class column and assign a partition to each column
     transposed.subtract(overlapping).filter { case (columnindex, _) => columnindex != class_index }
@@ -411,10 +409,10 @@ object DistributedFeatureSelection {
   }
 
   def shuffleRDD[B: ClassTag](rdd: RDD[B]): RDD[B] = {
-//    rdd.mapPartitions(iter => {
-//      val rng = new scala.util.Random()
-//      iter.map((rng.nextInt, _))
-//    }).partitionBy(new HashPartitioner(rdd.partitions.length)).values
+    //    rdd.mapPartitions(iter => {
+    //      val rng = new scala.util.Random()
+    //      iter.map((rng.nextInt, _))
+    //    }).partitionBy(new HashPartitioner(rdd.partitions.length)).values
     rdd.mapPartitions(new scala.util.Random().shuffle(_))
     rdd
 
