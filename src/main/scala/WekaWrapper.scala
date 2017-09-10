@@ -222,24 +222,21 @@ object WekaWrapper {
 
   }
 
-  def filterAttributes(data: Instances, algorithm: String): AttributeSelection = {
+  def filterAttributes(data: Instances, algorithm: String, ranking_features: Int): AttributeSelection = {
 
-    //We will always run CFS
-    var filter = new AttributeSelection
-    val eval = new CfsSubsetEval
-    val search = new GreedyStepwise
-    filter.setEvaluator(eval)
-    filter.setSearch(search)
-    filter.setInputFormat(data)
 
-    if (algorithm != "CFS") {
-      //If not CFS we need the number of attributes CFS selected
-      val filtered_data = Filter.useFilter(data, filter)
-      val selected_attributes = WekaWrapper.getAttributes(filtered_data)
-      filter = new AttributeSelection
+    val filter = new AttributeSelection
+
+    if (algorithm == "CFS") {
+      val eval = new CfsSubsetEval
+      val search = new GreedyStepwise
+      filter.setEvaluator(eval)
+      filter.setSearch(search)
+      filter.setInputFormat(data)
+    } else {
       val eval2 = if (algorithm == "IG") new InfoGainAttributeEval else new ReliefFAttributeEval
       val search2 = new Ranker()
-      search2.setNumToSelect(selected_attributes.size)
+      search2.setNumToSelect(ranking_features)
       filter.setEvaluator(eval2)
       filter.setSearch(search2)
       filter.setInputFormat(data)
