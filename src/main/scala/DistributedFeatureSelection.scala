@@ -107,13 +107,13 @@ object DistributedFeatureSelection {
         evaluateFeatures(train_dataframe, test_dataframe, attributes, inverse_attributes, class_index, features, ss.sparkContext)
         println(s"Evaluation time is ${System.currentTimeMillis() - evaluation_time}")
         println(s"Computation time by partition stats: ${times.stats()}")
-        println(s"Trainset: ${train_dataframe.count} Testset: ${test_dataframe.count}")
         println("\n\n")
 
       }
 
 
     }
+    println(s"Trainset: ${train_dataframe.count} Testset: ${test_dataframe.count}")
     println(s"Total script time is ${System.currentTimeMillis() - start_time}")
 
   }
