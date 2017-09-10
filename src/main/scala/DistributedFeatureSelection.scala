@@ -38,7 +38,7 @@ object DistributedFeatureSelection {
     }
 
     val start_time = System.currentTimeMillis()
-    val ss = SparkSession.builder().appName("distributed_feature_selection").master("local[*]").getOrCreate()
+    val ss = SparkSession.builder().appName("distributed_feature_selection").getOrCreate()
     ss.sparkContext.setLogLevel("ERROR")
 
     val (train_dataframe, test_dataframe) = createDataframes(opts.dataset(), opts.test_dataset.toOption, opts.class_index(), ss)
@@ -112,7 +112,6 @@ object DistributedFeatureSelection {
         val evaluation_time = System.currentTimeMillis()
         evaluateFeatures(train_dataframe, test_dataframe, attributes, inverse_attributes, class_index, features, ss.sparkContext)
         println(s"Evaluation time is ${System.currentTimeMillis() - evaluation_time}")
-        println(s"Computation time by partition stats: ${times.stats()}")
         println("\n\n")
 
       }
