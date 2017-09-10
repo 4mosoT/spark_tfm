@@ -53,7 +53,7 @@ object DistributedFeatureSelection {
     val comp_measures = opts.complexity_measure().split(",")
 
 
-    val aux_rdd = if (!opts.partType())ss.sparkContext.emptyRDD[(Int, Seq[Any])] else transposeRDD(train_dataframe.rdd)
+    val aux_rdd = if (!opts.partType()) ss.sparkContext.emptyRDD[(Int, Seq[Any])] else transposeRDD(train_dataframe.rdd)
     aux_rdd.cache()
 
     var cfs_features_selected = 1
@@ -68,7 +68,7 @@ object DistributedFeatureSelection {
         println(s"*****Using $fsa algorithm with $compmeasure as complexity measure*****")
         println(s"*****Number of partitions: ${opts.numParts()}*****")
 
-        /**Here we get the votes vector**/
+        /** Here we get the votes vector **/
         val (votes, times, transpose) = getVotesVector(train_dataframe, class_index, first_row, attributes, inverse_attributes,
           opts.numParts(), opts.partType(), opts.overlap(), fsa, cfs_features_selected, aux_rdd, ss.sparkContext)
 
@@ -92,7 +92,7 @@ object DistributedFeatureSelection {
             None
         }
 
-        /**Here we get the selected features**/
+        /** Here we get the selected features **/
         val features = computeThreshold(train_dataframe, rdd_inverse_attributes, votes, opts.alpha(), classifier, attributes, inverse_attributes, opts.partType(),
           opts.numParts(), 5, class_index, transpose, globalCompyMeasure, ss.sparkContext)
         println(s"Feature selection computation time is ${System.currentTimeMillis() - start_sub_time}")
@@ -102,7 +102,7 @@ object DistributedFeatureSelection {
           cfs_features_selected = features.count().toInt
         }
 
-        /**Here we evaluate several algorithms with the selected features**/
+        /** Here we evaluate several algorithms with the selected features **/
         val evaluation_time = System.currentTimeMillis()
         evaluateFeatures(train_dataframe, test_dataframe, attributes, inverse_attributes, class_index, features, ss.sparkContext)
         println(s"Evaluation time is ${System.currentTimeMillis() - evaluation_time}")
@@ -620,6 +620,12 @@ object DistributedFeatureSelection {
           // We use zipWithIndex where its index is its discretize value.
           val values = br_attributes.value(column_index)._1.get.zipWithIndex.map { case (value, sub_index) => value -> (sub_index + 1) }.toMap
 
+
+          var minmaxi = 0
+          var maxmini = 0
+          var maxmaxi = 0
+          var minmini = 0
+
           br_attributes.value(class_index)._1.get.foreach { _class_ =>
 
             val datasetC = zipped_row.filter(_._2 == _class_).map(x => values(x._1.toString))
@@ -629,30 +635,38 @@ object DistributedFeatureSelection {
               if (!computed_classes.contains(sub_class_)) {
                 val datasetK = zipped_row.filter(_._2 == sub_class_).map(x => values(x._1.toString))
 
-                val minmaxi = Seq(datasetC.max, datasetK.max).min
-                val maxmini = Seq(datasetC.min, datasetK.min).max
-                val maxmaxi = Seq(datasetC.max, datasetK.max).max
-                val minmini = Seq(datasetC.min, datasetK.min).min
+                minmaxi = Seq(datasetC.max, datasetK.max).min
+                maxmini = Seq(datasetC.min, datasetK.min).max
+                maxmaxi = Seq(datasetC.max, datasetK.max).max
+                minmini = Seq(datasetC.min, datasetK.min).min
 
-                result += Seq(0, minmaxi - maxmini).max / (maxmaxi - minmini)
               }
+              result += Seq(0, minmaxi - maxmini).max / (maxmaxi - minmini)
+
             }
 
           }
         } else {
           br_attributes.value(class_index)._1.get.foreach { _class_ =>
             val datasetC = zipped_row.filter(_._2 == _class_).map(_._1.toString.toDouble)
+
+            var minmaxi = 0.0
+            var maxmini = 0.0
+            var maxmaxi = 0.0
+            var minmini = 0.0
+
             br_attributes.value(class_index)._1.get.foreach { sub_class_ =>
               if (!computed_classes.contains(sub_class_)) {
                 val datasetK = zipped_row.filter(_._2 == sub_class_).map(_._1.toString.toDouble)
 
-                val minmaxi = Seq(datasetC.max, datasetK.max).min
-                val maxmini = Seq(datasetC.min, datasetK.min).max
-                val maxmaxi = Seq(datasetC.max, datasetK.max).max
-                val minmini = Seq(datasetC.min, datasetK.min).min
+                minmaxi = Seq(datasetC.max, datasetK.max).min
+                maxmini = Seq(datasetC.min, datasetK.min).max
+                maxmaxi = Seq(datasetC.max, datasetK.max).max
+                minmini = Seq(datasetC.min, datasetK.min).min
 
-                result += Seq(0, minmaxi - maxmini).max / (maxmaxi - minmini)
+
               }
+              result += Seq(0, minmaxi - maxmini).max / (maxmaxi - minmini)
             }
           }
         }
