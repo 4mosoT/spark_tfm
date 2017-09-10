@@ -38,7 +38,7 @@ object DistributedFeatureSelection {
     }
 
     val start_time = System.currentTimeMillis()
-    val ss = SparkSession.builder().appName("distributed_feature_selection").master("local[*]").getOrCreate()
+    val ss = SparkSession.builder().appName("distributed_feature_selection").getOrCreate()
     ss.sparkContext.setLogLevel("ERROR")
 
     val (train_dataframe, test_dataframe) = createDataframes(opts.dataset(), opts.test_dataset.toOption, opts.class_index(), ss)
@@ -641,9 +641,11 @@ object DistributedFeatureSelection {
                 minmini = Seq(datasetC.min, datasetK.min).min
 
               }
-              result += Seq(0, minmaxi - maxmini).max / (maxmaxi - minmini)
+
 
             }
+            val div = if (maxmaxi - minmini == 0) 0.01 else maxmaxi - minmini
+            result += Seq(0, minmaxi - maxmini).max / div
 
           }
         } else {
@@ -663,11 +665,11 @@ object DistributedFeatureSelection {
                 maxmini = Seq(datasetC.min, datasetK.min).max
                 maxmaxi = Seq(datasetC.max, datasetK.max).max
                 minmini = Seq(datasetC.min, datasetK.min).min
-
-
               }
-              result += Seq(0, minmaxi - maxmini).max / (maxmaxi - minmini)
+
             }
+            val div = if (maxmaxi - minmini == 0) 0.01 else maxmaxi - minmini
+            result += Seq(0, minmaxi - maxmini).max / div
           }
         }
         result
