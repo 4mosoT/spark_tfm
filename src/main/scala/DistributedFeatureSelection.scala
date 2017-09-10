@@ -58,19 +58,25 @@ object DistributedFeatureSelection {
 
     var cfs_features_selected = 1
 
-    for (compmeasure <- comp_measures) {
-      for (fsa <- fs_algorithms) {
+    for (fsa <- fs_algorithms) {
+
+      if (opts.partType()) println(s"*****Using vertical partitioning with ${opts.overlap() * 100}% overlap*****")
+      else println(s"*****Using horizontal partitioning*****")
+
+
+      /** Here we get the votes vector **/
+      val (votes, times, transpose, cfs_selected) = getVotesVector(train_dataframe, class_index, first_row, attributes, inverse_attributes,
+        opts.numParts(), opts.partType(), opts.overlap(), fsa, cfs_features_selected, aux_rdd, ss.sparkContext)
+
+      if (fsa == "CFS") cfs_features_selected = (cfs_selected.sum() / cfs_selected.count()).toInt
+
+      for (compmeasure <- comp_measures) {
 
         val start_sub_time = System.currentTimeMillis()
 
-        if (opts.partType()) println(s"*****Using vertical partitioning with ${opts.overlap() * 100}% overlap*****")
-        else println(s"*****Using horizontal partitioning*****")
         println(s"*****Using $fsa algorithm with $compmeasure as complexity measure*****")
         println(s"*****Number of partitions: ${opts.numParts()}*****")
 
-        /** Here we get the votes vector **/
-        val (votes, times, transpose) = getVotesVector(train_dataframe, class_index, first_row, attributes, inverse_attributes,
-          opts.numParts(), opts.partType(), opts.overlap(), fsa, cfs_features_selected, aux_rdd, ss.sparkContext)
 
         val globalCompyMeasure = compmeasure match {
           case "F1" => fisherRatio _
@@ -95,7 +101,7 @@ object DistributedFeatureSelection {
         /** Here we get the selected features **/
         val features = computeThreshold(train_dataframe, rdd_inverse_attributes, votes, opts.alpha(), classifier, attributes, inverse_attributes, opts.partType(),
           opts.numParts(), 5, class_index, transpose, globalCompyMeasure, ss.sparkContext)
-        println(s"Feature selection computation time is ${System.currentTimeMillis() - start_sub_time}")
+        println(s"Feature selection computation time is ${System.currentTimeMillis() - start_sub_time} (votes + threshold)")
 
 
         if (fsa == "CFS") {
@@ -202,7 +208,7 @@ object DistributedFeatureSelection {
   def getVotesVector(dataframe: DataFrame, class_index: Int, first_row: Row, br_attributes: Broadcast[Map[Int, (Option[mutable.WrappedArray[String]], String)]], br_inverse_attributes: Broadcast[Map[String, Int]],
                      numParts: Int, vertical: Boolean, overlap: Double, filter: String, ranking_features: Int,
                      transpose_input: RDD[(Int, Seq[Any])],
-                     sc: SparkContext): (RDD[(String, Int)], RDD[Long], RDD[(Int, Seq[Any])]) = {
+                     sc: SparkContext): (RDD[(String, Int)], RDD[Long], RDD[(Int, Seq[Any])], RDD[Int]) = {
 
     /** **************************
       * Getting the Votes vector.
@@ -210,6 +216,7 @@ object DistributedFeatureSelection {
 
     val rounds = 5
     var times = sc.emptyRDD[Long]
+    var cfs_selected = sc.emptyRDD[Int]
     val trans_input = if (transpose_input.isEmpty() && vertical) transposeRDD(dataframe.rdd) else transpose_input
 
     val votes = {
@@ -222,6 +229,9 @@ object DistributedFeatureSelection {
             br_class_column, br_attributes, br_inverse_attributes, class_index, numParts, filter, overlap, ranking_features)
           sub_votes = sub_votes ++ result.map(x => (x._1, x._2._1))
           times = times ++ result.map(x => x._2._2)
+          if (filter == "CFS") {
+            cfs_selected = cfs_selected ++ result.map(x => x._2._3)
+          }
         }
       } else {
         val (schema, class_schema_index) = WekaWrapper.attributesSchema(first_row, br_attributes.value, class_index)
@@ -231,12 +241,14 @@ object DistributedFeatureSelection {
             br_attributes, br_inverse_attributes, class_index, numParts, filter, br_schema, class_schema_index, ranking_features)
           sub_votes = sub_votes ++ result.map(x => (x._1, x._2._1))
           times = times ++ result.map(x => x._2._2)
-
+          if (filter == "CFS") {
+            cfs_selected = cfs_selected ++ result.map(x => x._2._3)
+          }
         }
       }
       sub_votes.reduceByKey(_ + _)
     }
-    (votes, times, trans_input)
+    (votes, times, trans_input, cfs_selected)
   }
 
   def computeThreshold(dataframe: DataFrame, RDD_inverse_attributes: RDD[(String, Int)], votes: RDD[(String, Int)], alpha_value: Double, classifier: Option[PipelineStage],
@@ -273,7 +285,7 @@ object DistributedFeatureSelection {
       val selected_features = selected_features_0_votes ++ votes.filter(_._2 < a).map(_._1)
 
       if (selected_features.count() > 1) {
-        println(s"\nStarting threshold computation with minVotes = $a / maxVotes = $maxVote with ${selected_features.count() - 1} features")
+//        println(s"\nStarting threshold computation with minVotes = $a / maxVotes = $maxVote with ${selected_features.count() - 1} features")
         val selected_features_dataframe = dataframe.select(selected_features.collect().map(col): _*)
         val retained_feat_percent = (selected_features.count().toDouble / dataframe.columns.length) * 100
         if (classifier.isDefined) {
@@ -286,14 +298,14 @@ object DistributedFeatureSelection {
         } else {
           val start_comp = System.currentTimeMillis()
           compMeasure = globalComplexityMeasure(selected_features_dataframe, br_attributes, sc, transpose_input, class_index)
-          println(s"\n\tComplexity Measure Computation Time: ${System.currentTimeMillis() - start_comp}.")
+//          println(s"\n\tComplexity Measure Computation Time: ${System.currentTimeMillis() - start_comp}.")
         }
 
         e_v += ((a, alpha * compMeasure + (1 - alpha) * retained_feat_percent))
 
-        println(s"\tThreshold computation in ${System.currentTimeMillis() - starting_time} " +
-          s"\n\t\t Complexity Measure Value: $compMeasure \n\t\t Retained Features Percent: $retained_feat_percent " +
-          s"\n\t\t EV Value = ${alpha * compMeasure + (1 - alpha) * retained_feat_percent} \n")
+//        println(s"\tThreshold computation in ${System.currentTimeMillis() - starting_time} " +
+//          s"\n\t\t Complexity Measure Value: $compMeasure \n\t\t Retained Features Percent: $retained_feat_percent " +
+//          s"\n\t\t EV Value = ${alpha * compMeasure + (1 - alpha) * retained_feat_percent} \n")
 
       }
     }
@@ -302,7 +314,7 @@ object DistributedFeatureSelection {
     val features = selected_features_0_votes ++ votes.filter(_._2 < selected_threshold).map(_._1)
 
 
-    println(s"Total threshold computation in ${System.currentTimeMillis() - threshold_time}\n")
+    println(s"\nTotal threshold computation in ${System.currentTimeMillis() - threshold_time}")
     println(s"Number of features is ${features.count() - 1}")
 
     features
@@ -359,7 +371,7 @@ object DistributedFeatureSelection {
                                                      br_attributes: Broadcast[Map[Int, (Option[mutable.WrappedArray[String]], String)]], br_inverse_attributes: Broadcast[Map[String, Int]],
                                                      class_index: Int, numParts: Int, filter: String,
                                                      br_attributes_schema: Broadcast[util.ArrayList[Attribute]],
-                                                     class_schema_index: Int, ranking_features: Int): RDD[(String, (Int, Long))] = {
+                                                     class_schema_index: Int, ranking_features: Int): RDD[(String, (Int, Long, Int))] = {
 
     /** Horizontally partition selection features */
 
@@ -388,9 +400,9 @@ object DistributedFeatureSelection {
         val filtered_data = Filter.useFilter(inst, WekaWrapper.filterAttributes(inst, filter, ranking_features))
         val time = System.currentTimeMillis() - start_time
         val selected_attributes = WekaWrapper.getAttributes(filtered_data)
-        (br_inverse_attributes.value.keySet.diff(selected_attributes) - br_attributes.value(class_index)._2).map((_, (1, time)))
+        (br_inverse_attributes.value.keySet.diff(selected_attributes) - br_attributes.value(class_index)._2).map((_, (1, time, filtered_data.numAttributes())))
 
-    }.reduceByKey((t1, t2) => (t1._1 + t2._1, math.max(t1._2, t2._2)))
+    }.reduceByKey((t1, t2) => (t1._1 + t2._1, math.max(t1._2, t2._2), math.max(t1._3, t2._3)))
 
 
   }
@@ -398,7 +410,7 @@ object DistributedFeatureSelection {
 
   def verticalPartitioningFeatureSelection(sc: SparkContext, transposed: RDD[(Int, Seq[Any])], br_class_column: Broadcast[(Int, Seq[Any])],
                                            br_attributes: Broadcast[Map[Int, (Option[mutable.WrappedArray[String]], String)]], br_inverse_attributes: Broadcast[Map[String, Int]],
-                                           class_index: Int, numParts: Int, filter: String, overlap: Double = 0, ranking_features: Int): RDD[(String, (Int, Long))] = {
+                                           class_index: Int, numParts: Int, filter: String, overlap: Double = 0, ranking_features: Int): RDD[(String, (Int, Long, Int))] = {
 
     /** Vertically partition selection features */
     val classes = br_attributes.value(class_index)._1.get
@@ -421,10 +433,10 @@ object DistributedFeatureSelection {
         val selected_attributes = WekaWrapper.getAttributes(filtered_data)
 
         // Getting the diff we can obtain the features to increase the votes and taking away the class
-        (br_inverse_attributes.value.keySet.diff(selected_attributes) - br_attributes.value(class_index)._2).map((_, (1, System.currentTimeMillis() - start_time)))
+        (br_inverse_attributes.value.keySet.diff(selected_attributes) - br_attributes.value(class_index)._2).map((_, (1, System.currentTimeMillis() - start_time, filtered_data.numAttributes())))
 
 
-    }.reduceByKey((t1, t2) => (t1._1 + t2._1, math.max(t1._2, t2._2)))
+    }.reduceByKey((t1, t2) => (t1._1 + t2._1, math.max(t1._2, t2._2), math.max(t1._3, t2._3)))
 
 
   }
@@ -452,12 +464,12 @@ object DistributedFeatureSelection {
   }
 
   def shuffleRDD[B: ClassTag](rdd: RDD[B]): RDD[B] = {
-        rdd.mapPartitions(iter => {
-          val rng = new scala.util.Random()
-          iter.map((rng.nextInt, _))
-        }).partitionBy(new HashPartitioner(rdd.partitions.length)).values
-//    rdd.mapPartitions(new scala.util.Random().shuffle(_))
-//    rdd
+    rdd.mapPartitions(iter => {
+      val rng = new scala.util.Random()
+      iter.map((rng.nextInt, _))
+    }).partitionBy(new HashPartitioner(rdd.partitions.length)).values
+    //    rdd.mapPartitions(new scala.util.Random().shuffle(_))
+    //    rdd
 
   }
 
