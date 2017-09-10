@@ -1,5 +1,6 @@
 import java.util
 
+import org.apache.spark.{HashPartitioner, SparkContext}
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.ml.classification._
 import org.apache.spark.ml.evaluation.MulticlassClassificationEvaluator
@@ -8,8 +9,7 @@ import org.apache.spark.ml.{Pipeline, PipelineStage}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.functions.{col, collect_set}
 import org.apache.spark.sql.{DataFrame, Row, SparkSession}
-import org.apache.spark.{HashPartitioner, SparkContext}
-import org.rogach.scallop.{ScallopConf, ScallopOption, Subcommand}
+import org.rogach.scallop.{ScallopConf, ScallopOption}
 import weka.core.{Attribute, Instances}
 import weka.filters.Filter
 
@@ -38,7 +38,7 @@ object DistributedFeatureSelection {
     }
 
     val start_time = System.currentTimeMillis()
-    val ss = SparkSession.builder().appName("distributed_feature_selection").getOrCreate()
+    val ss = SparkSession.builder().appName("distributed_feature_selection").master("local[*]").getOrCreate()
     ss.sparkContext.setLogLevel("ERROR")
 
     val (train_dataframe, test_dataframe) = createDataframes(opts.dataset(), opts.test_dataset.toOption, opts.class_index(), ss)
@@ -215,7 +215,6 @@ object DistributedFeatureSelection {
     val votes = {
       var sub_votes = sc.emptyRDD[(String, Int)]
       if (vertical) {
-
         // Get the class column
         val br_class_column = sc.broadcast(trans_input.filter { case (columnindex, _) => columnindex == class_index }.first())
         for (_ <- 1 to rounds) {
@@ -453,12 +452,12 @@ object DistributedFeatureSelection {
   }
 
   def shuffleRDD[B: ClassTag](rdd: RDD[B]): RDD[B] = {
-    //    rdd.mapPartitions(iter => {
-    //      val rng = new scala.util.Random()
-    //      iter.map((rng.nextInt, _))
-    //    }).partitionBy(new HashPartitioner(rdd.partitions.length)).values
-    rdd.mapPartitions(new scala.util.Random().shuffle(_))
-    rdd
+        rdd.mapPartitions(iter => {
+          val rng = new scala.util.Random()
+          iter.map((rng.nextInt, _))
+        }).partitionBy(new HashPartitioner(rdd.partitions.length)).values
+//    rdd.mapPartitions(new scala.util.Random().shuffle(_))
+//    rdd
 
   }
 
