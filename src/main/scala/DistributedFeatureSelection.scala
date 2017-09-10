@@ -52,8 +52,10 @@ object DistributedFeatureSelection {
     val fs_algorithms = opts.fs_algorithms().split(",")
     val comp_measures = opts.complexity_measure().split(",")
 
-    var already_cache = false
-    var aux_rdd = ss.sparkContext.emptyRDD[(Int, Seq[Any])]
+
+    val aux_rdd = if (!opts.partType())ss.sparkContext.emptyRDD[(Int, Seq[Any])] else transposeRDD(train_dataframe.rdd)
+    aux_rdd.cache()
+
     var cfs_features_selected = 1
 
     for (compmeasure <- comp_measures) {
@@ -69,12 +71,6 @@ object DistributedFeatureSelection {
         /**Here we get the votes vector**/
         val (votes, times, transpose) = getVotesVector(train_dataframe, class_index, first_row, attributes, inverse_attributes,
           opts.numParts(), opts.partType(), opts.overlap(), fsa, cfs_features_selected, aux_rdd, ss.sparkContext)
-
-        if (opts.partType() && !already_cache) {
-          aux_rdd = transpose
-          transpose.cache()
-          already_cache = true
-        }
 
         val globalCompyMeasure = compmeasure match {
           case "F1" => fisherRatio _
@@ -111,7 +107,8 @@ object DistributedFeatureSelection {
         evaluateFeatures(train_dataframe, test_dataframe, attributes, inverse_attributes, class_index, features, ss.sparkContext)
         println(s"Evaluation time is ${System.currentTimeMillis() - evaluation_time}")
         println(s"Computation time by partition stats: ${times.stats()}")
-        println(s"Trainset: ${test_dataframe.count} Testset: ${test_dataframe.count}")
+        println(s"Trainset: ${train_dataframe.count} Testset: ${test_dataframe.count}")
+        println("\n\n")
 
       }
 
