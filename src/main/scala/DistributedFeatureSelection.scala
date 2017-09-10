@@ -33,7 +33,7 @@ object DistributedFeatureSelection {
       val class_index: ScallopOption[Boolean] = toggle("first", noshort = true, default = Some(false), descrYes = "Required if class is first column")
       val feature_algorithm: ScallopOption[String] = opt[String]("feature_selection_algorithm", required = true, descr = "Feature selection algorithm",
         validate = { x => x == "CFS" || x == "IG" || x == "RF" })
-      val raking_features: ScallopOption[Int] = opt[Int]("ranking", validate = 0 < _, default = Some(0), descr = "Number of features to keep. Ranking")
+      val raking_features: ScallopOption[Int] = opt[Int]("ranking", validate = 0 < _, default = Some(1), descr = "Number of features to keep. Ranking")
       val partType: ScallopOption[Boolean] = toggle("vertical", default = Some(false), descrYes = "Vertical partitioning / Default Horizontal")
       val overlap: ScallopOption[Double] = opt[Double]("overlap", default = Some(0.0), descr = "Overlap")
       val numParts: ScallopOption[Int] = opt[Int]("partitions", validate = 0 < _, descr = "Num of partitions", required = true)
@@ -342,7 +342,6 @@ object DistributedFeatureSelection {
         (inst1: Instances, inst2: Instances) => WekaWrapper.mergeInstances(inst1, inst2)
 
       )
-    print(rdd.count())
     rdd.flatMap {
       case (_, inst) =>
         val start_time = System.currentTimeMillis()
