@@ -1,6 +1,6 @@
 import java.util
 
-import org.apache.spark.{HashPartitioner, SparkContext}
+import org.apache.spark.{HashPartitioner, SparkConf, SparkContext}
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.ml.classification._
 import org.apache.spark.ml.evaluation.MulticlassClassificationEvaluator
@@ -39,6 +39,7 @@ object DistributedFeatureSelection {
 
     val start_time = System.currentTimeMillis()
     val ss = SparkSession.builder().appName("distributed_feature_selection").getOrCreate()
+
     ss.sparkContext.setLogLevel("ERROR")
 
     val (train_dataframe, test_dataframe) = createDataframes(opts.dataset(), opts.test_dataset.toOption, opts.class_index(), ss)
