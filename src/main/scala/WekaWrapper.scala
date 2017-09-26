@@ -74,7 +74,7 @@ object WekaWrapper {
         if (value.isDefined) {
           val attribute_values = new util.ArrayList[String]()
           attributes(index)._1.get.foreach(attribute_values.add)
-          attributes_schema.add(new Attribute(column_name, attribute_values))
+          attributes_schema.add(new Attribute(column_name,attribute_values))
         } else {
           attributes_schema.add(new Attribute(column_name))
         }
