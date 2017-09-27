@@ -212,6 +212,23 @@ object WekaWrapper {
 
   }
 
+  def addRowToInstances(data: Instances, attributes: Map[Int, (Option[Seq[String]], String)], attributes_schema: util.ArrayList[Attribute], row: Array[String]): Instances = {
+
+    val instance = new DenseInstance(attributes_schema.size())
+    row.zipWithIndex.foreach({ case (value, index) =>
+      if (attributes(index)._1.isDefined) {
+        instance.setValue(attributes_schema.get(index), value.asInstanceOf[String])
+      } else {
+        instance.setValue(attributes_schema.get(index), value.toString.toDouble)
+      }
+    })
+    data.add(instance)
+
+    data
+
+  }
+
+
   def mergeInstances(inst1: Instances, inst2: Instances): Instances = {
 
     for (index <- 0 until inst1.size()) {
