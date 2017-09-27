@@ -1,7 +1,8 @@
+package onlyRDD
+
 import java.io.File
 import java.util
 
-import org.apache.spark.sql.{DataFrame, Row}
 import weka.attributeSelection._
 import weka.core.converters.ArffSaver
 import weka.core.{Attribute, DenseInstance, Instances}
