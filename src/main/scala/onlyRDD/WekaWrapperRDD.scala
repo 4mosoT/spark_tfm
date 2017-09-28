@@ -63,10 +63,7 @@ object WekaWrapperRDD {
     class_column._2.zipWithIndex.foreach { case (value, index) =>
       data.instance(index).setValue(attributes_schema.get(attributes_schema.size - 1), value.toString)
     }
-
     data
-
-
   }
 
 
