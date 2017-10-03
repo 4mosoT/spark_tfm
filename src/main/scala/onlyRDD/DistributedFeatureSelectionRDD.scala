@@ -3,11 +3,14 @@ package onlyRDD
 import java.util
 
 import org.apache.spark.broadcast.Broadcast
-import org.apache.spark.ml.{Pipeline, PipelineStage}
 import org.apache.spark.ml.classification._
 import org.apache.spark.ml.evaluation.MulticlassClassificationEvaluator
+import org.apache.spark.ml.feature.{OneHotEncoder, StringIndexer, VectorAssembler}
+import org.apache.spark.ml.{Pipeline, PipelineStage}
 import org.apache.spark.rdd.RDD
-import org.apache.spark.{HashPartitioner, SparkConf, SparkContext}
+import org.apache.spark.sql.functions.col
+import org.apache.spark.sql.{DataFrame, Row, SparkSession}
+import org.apache.spark.{HashPartitioner, SparkContext}
 import org.rogach.scallop.{ScallopConf, ScallopOption}
 import weka.core.{Attribute, Instances}
 import weka.filters.Filter
@@ -36,8 +39,13 @@ object DistributedFeatureSelectionRDD {
       verify()
     }
 
-    val conf = new SparkConf().setMaster("local[*]").setAppName("Distributed Feature Selection")
-    val sc = new SparkContext(conf)
+    //    val conf = new SparkConf().setMaster("local[*]").setAppName("Distributed Feature Selection")
+    //    val sc = new SparkContext(conf)
+    val start_time = System.currentTimeMillis()
+    val ss = SparkSession.builder().appName("distributed_feature_selection").master("local[*]").getOrCreate()
+    val sc = ss.sparkContext
+
+
     sc.setLogLevel("ERROR")
 
     val (train_rdd, test_rdd) = createRDDs(opts.dataset(), None, opts.class_index(), sc)
@@ -95,7 +103,7 @@ object DistributedFeatureSelectionRDD {
 
         /** Here we get the selected features **/
         val features = computeThreshold(train_rdd, votes, opts.alpha(), classifier, br_attributes, opts.partType(),
-          opts.numParts(), 5, transposed_rdd, globalCompyMeasure, sc)
+          opts.numParts(), 5, transposed_rdd, globalCompyMeasure, ss)
         println(s"Feature selection computation time is ${System.currentTimeMillis() - start_sub_time} (votes + threshold)")
 
 
@@ -103,9 +111,12 @@ object DistributedFeatureSelectionRDD {
           cfs_features_selected = features.count().toInt
         }
 
+        val train_dataframe = createDataFrameFromFeatures(train_rdd, features,  br_attributes, ss)
+        val test_dataframe = createDataFrameFromFeatures(test_rdd, features,  br_attributes, ss)
+
         /** Here we evaluate several algorithms with the selected features **/
         val evaluation_time = System.currentTimeMillis()
-        evaluateFeatures(train_dataframe, test_dataframe, attributes, inverse_attributes, class_index, features, ss.sparkContext)
+        evaluateFeatures(train_dataframe, test_dataframe, br_attributes, features, sc)
         println(s"Evaluation time is ${System.currentTimeMillis() - evaluation_time}")
         println("\n\n")
 
@@ -113,7 +124,7 @@ object DistributedFeatureSelectionRDD {
 
 
     }
-    println(s"Trainset: ${train_dataframe.count} Testset: ${test_dataframe.count}")
+//    println(s"Trainset: ${train_dataframe.count} Testset: ${test_dataframe.count}")
     println(s"Total script time is ${System.currentTimeMillis() - start_time}")
 
   }
@@ -155,7 +166,7 @@ object DistributedFeatureSelectionRDD {
       * Creation of attributes maps
       * *****************************/
 
-    val sample = rdd.takeSample(false, 1)(0).zipWithIndex
+    val sample = rdd.take(1)(0).zipWithIndex
     val nominalAttributes = sample.dropRight(1).filter(tuple => parseNumeric(tuple._1).isEmpty).map(_._2) :+ (sample.length - 1)
 
     val uniques_nominal_values = rdd.flatMap(_.zipWithIndex).filter {
@@ -226,9 +237,10 @@ object DistributedFeatureSelectionRDD {
   def computeThreshold(rdd: RDD[Array[String]], votes: RDD[(String, Int)], alpha_value: Double, classifier: Option[PipelineStage],
                        br_attributes: Broadcast[Map[Int, (Option[Set[String]], String)]],
                        vertical: Boolean, numParts: Int, rounds: Int = 5, transpose_input: RDD[(Int, Seq[String])],
-                       globalComplexityMeasure: (RDD[Array[String]], Broadcast[Map[Int, (Option[Set[String]], String)]], SparkContext, RDD[(Int, Seq[String])]) => Double,
-                       sc: SparkContext): RDD[String] = {
+                       globalComplexityMeasure: (DataFrame, Broadcast[Map[Int, (Option[Set[String]], String)]], SparkContext, RDD[(Int, Seq[String])]) => Double,
+                       ss: SparkSession): RDD[String] = {
 
+    val sc = ss.sparkContext
     /** ******************************************
       * Computing 'Selection Features Threshold'
       * ******************************************/
@@ -242,8 +254,7 @@ object DistributedFeatureSelectionRDD {
 
     //We get the features that aren't in the votes set. That means features -> Votes = 0
     // ****Class column included****
-    val selected_features_0_votes = sc.parallelize(br_attributes.value.map(_._2._2).filter( !votes.map(_._1).collect().contains(_)).toArray)
-
+    val selected_features_0_votes = sc.parallelize(br_attributes.value.map(_._2._2).filter(!votes.map(_._1).collect().contains(_)).toSeq)
 
     val alpha = alpha_value
     var e_v = collection.mutable.ArrayBuffer[(Int, Double)]()
@@ -255,13 +266,18 @@ object DistributedFeatureSelectionRDD {
       val starting_time = System.currentTimeMillis()
       // We add votes below Threshold value
       val selected_features = selected_features_0_votes ++ votes.filter(_._2 < a).map(_._1)
+      val selected_features_indexes = selected_features.map(value => if (value != "class") value.substring(4).toInt else br_attributes.value.size - 1).collect()
 
-      if (selected_features.count() > 1) {
+      if (selected_features_indexes.length > 1) {
         //        println(s"\nStarting threshold computation with minVotes = $a / maxVotes = $maxVote with ${selected_features.count() - 1} features")
-        val selected_features_rdd = dataframe.select(selected_features.collect().map(col): _*)
-        val retained_feat_percent = (selected_features.count().toDouble / dataframe.columns.length) * 100
+        val selected_features_rdd = rdd.map(row => row.zipWithIndex.filter { case (_, index) => selected_features_indexes.contains(index) })
+        val retained_feat_percent = (selected_features_indexes.length.toDouble / br_attributes.value.size - 1) * 100
+
+        import ss.implicits._
+        val selected_features_dataframe = selected_features_rdd.toDF(selected_features.collect().mkString(","))
+
         if (classifier.isDefined) {
-          val (pipeline_stages, columns_to_cast) = createPipeline(sc.parallelize(selected_features_dataframe.columns), br_attributes, sc)
+          val (pipeline_stages, columns_to_cast) = createPipeline(selected_features, br_attributes, sc)
           val casted_dataframe = castDFToDouble(selected_features_dataframe, columns_to_cast)
           val pipeline = new Pipeline().setStages(pipeline_stages :+ classifier.get).fit(casted_dataframe)
           val evaluator = new MulticlassClassificationEvaluator().setLabelCol("label")
@@ -269,7 +285,7 @@ object DistributedFeatureSelectionRDD {
           compMeasure = 1 - evaluator.evaluate(pipeline.transform(casted_dataframe))
         } else {
           val start_comp = System.currentTimeMillis()
-          compMeasure = globalComplexityMeasure(selected_features_dataframe, br_attributes, sc, transpose_input, class_index)
+          compMeasure = globalComplexityMeasure(selected_features_dataframe, br_attributes, sc, transpose_input)
           //          println(s"\n\tComplexity Measure Computation Time: ${System.currentTimeMillis() - start_comp}.")
         }
 
@@ -290,6 +306,48 @@ object DistributedFeatureSelectionRDD {
     println(s"Number of features is ${features.count() - 1}")
 
     features
+  }
+
+  def evaluateFeatures(dataframe: DataFrame, test_dataframe: DataFrame,
+                       br_attributes: Broadcast[Map[Int, (Option[Set[String]], String)]],
+                       features: RDD[String],
+                       sc: SparkContext): Unit = {
+    /** ******************************************
+      * Evaluate Models With Selected Features
+      * ******************************************/
+
+    val (pipeline_stages, columns_to_cast) = createPipeline(features, br_attributes, sc)
+    val features_columns = features.collect().map(col)
+
+    val selected_features_train_dataframe = dataframe.select(features_columns: _*)
+    val selected_features_test_dataframe = test_dataframe.select(features_columns: _*)
+
+    dataframe.unpersist()
+
+    val casted_train_dataframe = castDFToDouble(selected_features_train_dataframe, columns_to_cast)
+    val casted_test_dataframe = castDFToDouble(selected_features_test_dataframe, columns_to_cast)
+
+    val transformation_pipeline = new Pipeline().setStages(pipeline_stages).fit(casted_train_dataframe)
+    val transformed_train_dataset = transformation_pipeline.transform(casted_train_dataframe)
+    transformed_train_dataset.cache()
+    val transformed_test_dataset = transformation_pipeline.transform(casted_test_dataframe)
+    transformed_test_dataset.cache()
+
+    val evaluator = new MulticlassClassificationEvaluator().setLabelCol("label")
+      .setPredictionCol("prediction").setMetricName("accuracy")
+
+
+    Seq(("SMV", new OneVsRest().setClassifier(new LinearSVC())), ("Decision Tree", new DecisionTreeClassifier()),
+      ("Naive Bayes", new NaiveBayes()), ("KNN", new KNNClassifier().setTopTreeSize(transformed_train_dataset.count().toInt / 500 + 1).setK(1)))
+      .foreach {
+
+        case (name, classi) =>
+
+          val accuracy = evaluator.evaluate(classi.fit(transformed_train_dataset).transform(transformed_test_dataset))
+          println(s"Accuracy for $name is $accuracy")
+
+      }
+
   }
 
   /** ***********************
@@ -366,26 +424,127 @@ object DistributedFeatureSelectionRDD {
 
   }
 
+  /** *******************
+    * Auxiliar Functions
+    * ********************/
+
+  def createDataFrameFromFeatures(rdd: RDD[Array[String]], selected_features: RDD[String], br_attributes: Broadcast[Map[Int, (Option[Set[String]], String)]], ss: SparkSession ): DataFrame = {
+    import ss.implicits._
+    val selected_features_indexes = selected_features.map(value => if (value != "class") value.substring(4).toInt else br_attributes.value.size - 1).collect()
+    val selected_features_rdd = rdd.map(row => row.zipWithIndex.filter { case (_, index) => selected_features_indexes.contains(index) })
+    selected_features_rdd.toDF(selected_features.collect().mkString(","))
+  }
+
+  def parseNumeric(s: String): Option[Double] = {
+    try {
+      Some(s.toDouble)
+    } catch {
+      case _: Exception => None
+    }
+  }
+
+  def transposeRDD(rdd: RDD[Array[String]]): RDD[(Int, Seq[String])] = {
+    val columnAndRow = rdd.zipWithIndex.flatMap {
+      case (row, rowIndex) => row.toSeq.zipWithIndex.map {
+        case (element, columnIndex) => columnIndex -> (rowIndex, element)
+      }
+    }
+    columnAndRow.groupByKey.sortByKey().map {
+      case (columnIndex, rowIterable) => (columnIndex, rowIterable.toSeq.sortBy(_._1).map(_._2))
+    }
+  }
+
+  def transposeRDDRow(rdd: RDD[Row]): RDD[(Int, Seq[String])] = {
+    val columnAndRow = rdd.zipWithIndex.flatMap {
+      case (row, rowIndex) => row.toSeq.zipWithIndex.map {
+        case (element, columnIndex) => columnIndex -> (rowIndex, element)
+      }
+    }
+    columnAndRow.groupByKey.sortByKey().map { case (columnIndex, rowIterable) => (columnIndex, rowIterable.toSeq.sortBy(_._1).map(_._2.toString)) }
+
+  }
+
+  def castDFToDouble(df: DataFrame, columns: Array[String]): DataFrame = {
+    //Cast to double of columns that aren't categorical
+    df.select(df.columns.map { c =>
+      if (columns.contains(c)) {
+        col(c).cast("Double")
+      } else {
+        col(c)
+      }
+    }: _*)
+
+  }
+
+  def shuffleRDD[B: ClassTag](rdd: RDD[B]): RDD[B] = {
+    rdd.mapPartitions(iter => {
+      val rng = new scala.util.Random()
+      iter.map((rng.nextInt, _))
+    }).partitionBy(new HashPartitioner(rdd.partitions.length)).values
+  }
+
+  def createPipeline(columns: RDD[String],
+                     attributes: Broadcast[Map[Int, (Option[Set[String]], String)]],
+                     sc: SparkContext
+                    ): (Array[PipelineStage], Array[String]) = {
+
+    val class_index = attributes.value.size - 1
+
+    //Mllib needs two special columns [features] and [label] to work. We have to assemble the columns we selected
+    val double_columns_to_assemble: RDD[String] = columns.filter(_ != "class")
+
+    // Get categorical columns
+    val categorical_columns_filter = columns.filter(column_name => parseNumeric(column_name).isEmpty && column_name != "class")
+
+    if (categorical_columns_filter.count > 1) {
+      val stages_columns =
+        categorical_columns_filter.map {
+          cname =>
+            val st_indexer = new StringIndexer().setInputCol(cname).setOutputCol(s"${cname}_index")
+            (Array(st_indexer, new OneHotEncoder().setInputCol(st_indexer.getOutputCol).setOutputCol(s"${cname}_vect")), Array(s"${cname}_vect"))
+        }.reduce((tuple1, tuple2) => (tuple1._1 ++ tuple2._1, tuple1._2 ++ tuple2._2))
+
+      val columns_to_assemble: Array[String] = double_columns_to_assemble.collect() ++ stages_columns._2
+      //Creation of pipeline // Transform class column from categorical to index //Assemble features
+      val pipeline: Array[PipelineStage] = stages_columns._1 ++
+        Array(new StringIndexer().setInputCol(attributes.value(class_index)._2).setOutputCol("label"), new VectorAssembler().setInputCols(columns_to_assemble).setOutputCol("features"))
+
+      (pipeline, columns_to_assemble)
+
+    } else {
+
+      val columns_to_assemble: Array[String] = double_columns_to_assemble.collect()
+      //Creation of pipeline // Transform class column from categorical to index //Assemble features
+      val pipeline: Array[PipelineStage] = Array(new StringIndexer().setInputCol(attributes.value(class_index)._2).setOutputCol("label"), new VectorAssembler().setInputCols(columns_to_assemble).setOutputCol("features"))
+
+      (pipeline, columns_to_assemble)
+
+    }
+
+
+  }
+
   /** ********************
     * Complexity measures
     * *********************/
 
 
-  def zeroGlobal(rdd: RDD[Array[String]], br_attributes: Broadcast[Map[Int, (Option[Set[String]], String)]], sc: SparkContext, transposedRDD: RDD[(Int, Seq[String])]): Double = {
+  def zeroGlobal(dataframe: DataFrame, br_attributes: Broadcast[Map[Int, (Option[Set[String]], String)]], sc: SparkContext, transposedRDD: RDD[(Int, Seq[String])]): Double = {
     0.0
   }
 
-  def fisherRatio(rdd: RDD[Array[String]], br_attributes: Broadcast[Map[Int, (Option[Set[String]], String)]], sc: SparkContext, transposedRDD: RDD[(Int, Seq[String])]): Double = {
+  def fisherRatio(dataframe: DataFrame, br_attributes: Broadcast[Map[Int, (Option[Set[String]], String)]], sc: SparkContext, transposedRDD: RDD[(Int, Seq[String])]): Double = {
 
 
     // ProportionclassMap => Class -> Proportion of class
-    val class_name = br_attributes.value(class_index)._2
+    val class_index = br_attributes.value.size - 1
+    val class_name = "class"
     val samples = dataframe.count().toDouble
     val br_proportionClassMap = sc.broadcast(dataframe.groupBy(class_name).count().rdd.map(row => row(0) -> (row(1).asInstanceOf[Long] / samples.toDouble)).collect().toMap)
     val class_column = sc.broadcast(dataframe.select(class_name).rdd.map(_ (0)).collect())
     val br_columns = sc.broadcast(dataframe.columns)
 
-    val rdd = if (!transposedRDD.isEmpty) transposedRDD.filter { case (x, _) => br_columns.value.contains(br_attributes.value(x)._2) } else transposeRDD(dataframe.drop(class_name).rdd)
+    val rdd = if (!transposedRDD.isEmpty) transposedRDD.filter { case (x, _) => br_columns.value.contains(br_attributes.value(x)._2) } else transposeRDDRow(dataframe.drop(class_name).rdd)
     val f1 = rdd.map {
       case (column_index, row) =>
         val zipped_row = row.zip(class_column.value)
@@ -441,11 +600,12 @@ object DistributedFeatureSelectionRDD {
     1 / f1
   }
 
-  def f2(rdd: RDD[Array[String]], br_attributes: Broadcast[Map[Int, (Option[Set[String]], String)]], sc: SparkContext, transposedRDD: RDD[(Int, Seq[String])]): Double = {
-    val class_name = br_attributes.value(class_index)._2
+  def f2(dataframe: DataFrame, br_attributes: Broadcast[Map[Int, (Option[Set[String]], String)]], sc: SparkContext, transposedRDD: RDD[(Int, Seq[String])]): Double = {
+    val class_index = br_attributes.value.size - 1
+    val class_name = "class"
     val class_column = sc.broadcast(dataframe.select(class_name).rdd.map(_ (0)).collect())
     val br_columns = sc.broadcast(dataframe.columns)
-    val rdd = if (!transposedRDD.isEmpty) transposedRDD.filter { case (x, _) => br_columns.value.contains(br_attributes.value(x)._2) } else transposeRDD(dataframe.drop(class_name).rdd)
+    val rdd = if (!transposedRDD.isEmpty) transposedRDD.filter { case (x, _) => br_columns.value.contains(br_attributes.value(x)._2) } else transposeRDDRow(dataframe.drop(class_name).rdd)
 
 
     val f2 = rdd.map {
@@ -518,37 +678,6 @@ object DistributedFeatureSelectionRDD {
     }
     f2.sum()
 
-  }
-
-
-  /** *******************
-    * Auxiliar Functions
-    * ********************/
-
-  def parseNumeric(s: String): Option[Double] = {
-    try {
-      Some(s.toDouble)
-    } catch {
-      case _: Exception => None
-    }
-  }
-
-  def transposeRDD(rdd: RDD[Array[String]]): RDD[(Int, Seq[String])] = {
-    val columnAndRow = rdd.zipWithIndex.flatMap {
-      case (row, rowIndex) => row.toSeq.zipWithIndex.map {
-        case (element, columnIndex) => columnIndex -> (rowIndex, element)
-      }
-    }
-    columnAndRow.groupByKey.sortByKey().map {
-      case (columnIndex, rowIterable) => (columnIndex, rowIterable.toSeq.sortBy(_._1).map(_._2))
-    }
-  }
-
-  def shuffleRDD[B: ClassTag](rdd: RDD[B]): RDD[B] = {
-    rdd.mapPartitions(iter => {
-      val rng = new scala.util.Random()
-      iter.map((rng.nextInt, _))
-    }).partitionBy(new HashPartitioner(rdd.partitions.length)).values
   }
 
 }
