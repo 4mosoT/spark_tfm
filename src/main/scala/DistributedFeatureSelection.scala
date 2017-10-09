@@ -39,7 +39,7 @@ object DistributedFeatureSelection {
     }
 
     val start_time = System.currentTimeMillis()
-    val ss = SparkSession.builder().appName("distributed_feature_selection").master("local[*]").getOrCreate()
+    val ss = SparkSession.builder().appName("distributed_feature_selection").getOrCreate()
     val sc = ss.sparkContext
 
 
@@ -57,16 +57,16 @@ object DistributedFeatureSelection {
 
     var cfs_features_selected = 1
 
+    if (opts.partType()) println(s"*****Using vertical partitioning with ${opts.overlap() * 100}% overlap*****")
+    else println(s"*****Using horizontal partitioning*****")
+    println(s"*****Number of partitions: ${opts.numParts()}*****")
+
 
     for (fsa <- fs_algorithms) {
 
-      if (opts.partType()) println(s"*****Using vertical partitioning with ${opts.overlap() * 100}% overlap*****")
-      else println(s"*****Using horizontal partitioning*****")
-
-
       /** Here we get the votes vector **/
       val (votes, times, cfs_selected) = getVotesVector(train_rdd, br_attributes, opts.numParts(), opts.partType(), opts.overlap(), "CFS", cfs_features_selected, transposed_rdd, sc)
-      println(s"Time $fsa computation stats:${times.stats()}")
+      println(s"\nTime $fsa computation stats:${times.stats()}")
 
       if (fsa == "CFS") cfs_features_selected = (cfs_selected.sum() / cfs_selected.count()).toInt
 
@@ -75,7 +75,6 @@ object DistributedFeatureSelection {
         val start_sub_time = System.currentTimeMillis()
 
         println(s"*****Using $fsa algorithm with $compmeasure as complexity measure*****")
-        println(s"*****Number of partitions: ${opts.numParts()}*****")
 
 
         val globalCompyMeasure = compmeasure match {
