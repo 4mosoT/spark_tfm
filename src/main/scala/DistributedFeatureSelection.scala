@@ -46,6 +46,7 @@ object DistributedFeatureSelection {
     sc.setLogLevel("ERROR")
 
     val (train_rdd, test_rdd) = createRDDs(opts.dataset(), None, opts.class_index(), sc)
+    println(s"TrainTest samples: ${train_rdd.count()} DataTest samples:${test_rdd.count()}")
     val attributes = createAttributesMap(train_rdd, sc)
     val br_attributes = sc.broadcast(attributes)
 
