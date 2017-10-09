@@ -39,13 +39,13 @@ object DistributedFeatureSelection {
     }
 
     val start_time = System.currentTimeMillis()
-    val ss = SparkSession.builder().appName("distributed_feature_selection").getOrCreate()
+    val ss = SparkSession.builder().appName("distributed_feature_selection").master("local[*]").getOrCreate()
     val sc = ss.sparkContext
 
 
     sc.setLogLevel("ERROR")
 
-    val (train_rdd, test_rdd) = createRDDs(opts.dataset(), None, opts.class_index(), sc)
+    val (train_rdd, test_rdd) = createRDDs(opts.dataset(), opts.test_dataset.toOption, opts.class_index(), sc)
     println(s"TrainTest samples: ${train_rdd.count()} DataTest samples:${test_rdd.count()}")
     val attributes = createAttributesMap(train_rdd, sc)
     val br_attributes = sc.broadcast(attributes)
