@@ -38,8 +38,6 @@ object DistributedFeatureSelection {
       verify()
     }
 
-    //    val conf = new SparkConf().setMaster("local[*]").setAppName("Distributed Feature Selection")
-    //    val sc = new SparkContext(conf)
     val start_time = System.currentTimeMillis()
     val ss = SparkSession.builder().appName("distributed_feature_selection").master("local[*]").getOrCreate()
     val sc = ss.sparkContext
@@ -68,7 +66,7 @@ object DistributedFeatureSelection {
 
       /** Here we get the votes vector **/
       val (votes, times, cfs_selected) = getVotesVector(train_rdd, br_attributes, opts.numParts(), opts.partType(), opts.overlap(), "CFS", cfs_features_selected, transposed_rdd, sc)
-
+      println(s"Time $fsa computation stats:${times.stats()}")
 
       if (fsa == "CFS") cfs_features_selected = (cfs_selected.sum() / cfs_selected.count()).toInt
 
@@ -101,8 +99,12 @@ object DistributedFeatureSelection {
         }
 
         /** Here we get the selected features **/
+        val threshold_time = System.currentTimeMillis()
         val features = computeThreshold(train_rdd, votes, opts.alpha(), classifier, br_attributes, opts.partType(),
           opts.numParts(), 5, transposed_rdd, globalCompyMeasure, ss)
+
+        println(s"Number of features is ${features.count() - 1}")
+        println(s"Total threshold computation in ${System.currentTimeMillis() - threshold_time}")
         println(s"Feature selection computation time is ${System.currentTimeMillis() - start_sub_time} (votes + threshold)")
 
 
@@ -123,7 +125,7 @@ object DistributedFeatureSelection {
 
 
     }
-    //    println(s"Trainset: ${train_dataframe.count} Testset: ${test_dataframe.count}")
+
     println(s"Total script time is ${System.currentTimeMillis() - start_time}")
 
   }
@@ -245,7 +247,6 @@ object DistributedFeatureSelection {
       * ******************************************/
 
     val votes_length = votes.count()
-    val threshold_time = System.currentTimeMillis()
     val avg_votes = votes.map(_._2).sum / votes_length
     val std_votes = math.sqrt(votes.map(votes => math.pow(votes._2 - avg_votes, 2)).sum / votes_length)
     val minVote = if (vertical) rounds * (numParts - 1) else (avg_votes - (std_votes / 2)).toInt
@@ -262,13 +263,11 @@ object DistributedFeatureSelection {
     var compMeasure = 0.0
     val step = if (vertical) 1 else 5
     for (a <- minVote to maxVote by step) {
-      val starting_time = System.currentTimeMillis()
       // We add votes below Threshold value
       val selected_features = selected_features_0_votes ++ votes.filter(_._2 < a).map(_._1)
       val selected_features_indexes = selected_features.map(value => if (value != "class") value.substring(4).toInt else br_attributes.value.size - 1).collect()
 
       if (selected_features_indexes.length > 1) {
-        //        println(s"\nStarting threshold computation with minVotes = $a / maxVotes = $maxVote with ${selected_features.count() - 1} features")
         val selected_features_rdd = rdd.map(row => row.zipWithIndex.filter { case (_, index) => selected_features_indexes.contains(index) })
         val retained_feat_percent = (selected_features_indexes.length.toDouble / br_attributes.value.size - 1) * 100
 
@@ -283,26 +282,16 @@ object DistributedFeatureSelection {
             .setPredictionCol("prediction").setMetricName("accuracy")
           compMeasure = 1 - evaluator.evaluate(pipeline.transform(casted_dataframe))
         } else {
-          val start_comp = System.currentTimeMillis()
           compMeasure = globalComplexityMeasure(selected_features_dataframe, br_attributes, sc, transpose_input)
-          //          println(s"\n\tComplexity Measure Computation Time: ${System.currentTimeMillis() - start_comp}.")
         }
 
         e_v += ((a, alpha * compMeasure + (1 - alpha) * retained_feat_percent))
-
-        //        println(s"\tThreshold computation in ${System.currentTimeMillis() - starting_time} " +
-        //          s"\n\t\t Complexity Measure Value: $compMeasure \n\t\t Retained Features Percent: $retained_feat_percent " +
-        //          s"\n\t\t EV Value = ${alpha * compMeasure + (1 - alpha) * retained_feat_percent} \n")
 
       }
     }
 
     val selected_threshold = e_v.minBy(_._2)._1
     val features = selected_features_0_votes ++ votes.filter(_._2 < selected_threshold).map(_._1)
-
-
-    println(s"\nTotal threshold computation in ${System.currentTimeMillis() - threshold_time}")
-    println(s"Number of features is ${features.count() - 1}")
 
     features
   }
