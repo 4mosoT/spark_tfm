@@ -3,7 +3,7 @@ import java.util
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.ml.classification._
 import org.apache.spark.ml.evaluation.MulticlassClassificationEvaluator
-import org.apache.spark.ml.feature.{OneHotEncoder, StringIndexer, VectorAssembler}
+import org.apache.spark.ml.feature.{MinMaxScaler, OneHotEncoder, StringIndexer, VectorAssembler}
 import org.apache.spark.ml.{Pipeline, PipelineStage}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.functions.col
@@ -499,8 +499,11 @@ object DistributedFeatureSelection {
     } else {
 
       val columns_to_assemble: Array[String] = double_columns_to_assemble.collect()
-      //Creation of pipeline // Transform class column from categorical to index //Assemble features
-      val pipeline: Array[PipelineStage] = Array(new StringIndexer().setInputCol(attributes.value(class_index)._2).setOutputCol("label"), new VectorAssembler().setInputCols(columns_to_assemble).setOutputCol("features"))
+       //Assemble features
+      val pipeline: Array[PipelineStage] = Array(new StringIndexer().setInputCol(attributes.value(class_index)._2).setOutputCol("label"),
+        new VectorAssembler().setInputCols(columns_to_assemble).setOutputCol("noscaledfeatures"),
+        new MinMaxScaler().setInputCol("noscaledfeatures").setOutputCol("features")
+      )
 
       (pipeline, columns_to_assemble)
 
