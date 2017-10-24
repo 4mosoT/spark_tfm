@@ -39,7 +39,7 @@ object DistributedFeatureSelection {
     }
 
     val start_time = System.currentTimeMillis()
-    val ss = SparkSession.builder().appName("distributed_feature_selection").getOrCreate()
+    val ss = SparkSession.builder().appName("distributed_feature_selection").master("local[*]").getOrCreate()
     val sc = ss.sparkContext
 
 
@@ -310,10 +310,9 @@ object DistributedFeatureSelection {
     val casted_train_dataframe = castDFToDouble(train_dataframe, columns_to_cast)
     val casted_test_dataframe = castDFToDouble(test_dataframe, columns_to_cast)
 
-    val transformation_pipeline = new Pipeline().setStages(pipeline_stages).fit(casted_train_dataframe)
-    val transformed_train_dataset = transformation_pipeline.transform(casted_train_dataframe)
+    val transformed_train_dataset = new Pipeline().setStages(pipeline_stages).fit(casted_train_dataframe).transform(casted_train_dataframe)
     transformed_train_dataset.cache()
-    val transformed_test_dataset = transformation_pipeline.transform(casted_test_dataframe)
+    val transformed_test_dataset = new Pipeline().setStages(pipeline_stages).fit(casted_test_dataframe).transform(casted_test_dataframe)
     transformed_test_dataset.cache()
 
     val evaluator = new MulticlassClassificationEvaluator().setLabelCol("label")
@@ -481,7 +480,7 @@ object DistributedFeatureSelection {
       cname != "class" && attributes.value(cname.substring(4).toInt)._1.isDefined
     })
 
-    if (categorical_columns_filter.count > 1) {
+    if (categorical_columns_filter.count > 0) {
       val stages_columns =
         categorical_columns_filter.map {
           cname =>
@@ -489,8 +488,11 @@ object DistributedFeatureSelection {
             (Array(st_indexer, new OneHotEncoder().setInputCol(st_indexer.getOutputCol).setOutputCol(s"${cname}_vect")), Array(s"${cname}_vect"))
         }.reduce((tuple1, tuple2) => (tuple1._1 ++ tuple2._1, tuple1._2 ++ tuple2._2))
 
+
       val columns_to_assemble: Array[String] = double_columns_to_assemble.collect() ++ stages_columns._2
+
       //Creation of pipeline // Transform class column from categorical to index //Assemble features
+
       val pipeline: Array[PipelineStage] = stages_columns._1 ++
         Array(new StringIndexer().setInputCol(attributes.value(class_index)._2).setOutputCol("label"), new VectorAssembler().setInputCols(columns_to_assemble).setOutputCol("features"))
 
@@ -499,7 +501,7 @@ object DistributedFeatureSelection {
     } else {
 
       val columns_to_assemble: Array[String] = double_columns_to_assemble.collect()
-       //Assemble features
+      //Assemble features
       val pipeline: Array[PipelineStage] = Array(new StringIndexer().setInputCol(attributes.value(class_index)._2).setOutputCol("label"),
         new VectorAssembler().setInputCols(columns_to_assemble).setOutputCol("noscaledfeatures"),
         new MinMaxScaler().setInputCol("noscaledfeatures").setOutputCol("features")
@@ -531,13 +533,17 @@ object DistributedFeatureSelection {
     val class_column = sc.broadcast(dataframe.select(class_name).rdd.map(_ (0)).collect())
     val br_columns = sc.broadcast(dataframe.columns)
 
-    val rdd = if (!transposedRDD.isEmpty) transposedRDD.filter { case (x, _) => br_columns.value.contains(br_attributes.value(x)._2) } else transposeRDDRow(dataframe.drop(class_name).rdd)
+    val rdd = if (!transposedRDD.isEmpty) transposedRDD.filter { case (x, _) => br_columns.value.contains(br_attributes.value(x)._2) }
+    else {
+      val index_columns = dataframe.columns.dropRight(1).map(_.substring(4).toInt)
+      transposeRDDRow(dataframe.drop(class_name).rdd).map{ case (index, row) => (index_columns(index), row)}
+    }
+
     val f1 = rdd.map {
       case (column_index, row) =>
         val zipped_row = row.zip(class_column.value)
         var sumMean: Double = 0
         var sumVar: Double = 0
-
         //Auxiliar Arrays
         val computed_classes = collection.mutable.ArrayBuffer.empty[String]
 
@@ -592,8 +598,11 @@ object DistributedFeatureSelection {
     val class_name = "class"
     val class_column = sc.broadcast(dataframe.select(class_name).rdd.map(_ (0)).collect())
     val br_columns = sc.broadcast(dataframe.columns)
-    val rdd = if (!transposedRDD.isEmpty) transposedRDD.filter { case (x, _) => br_columns.value.contains(br_attributes.value(x)._2) } else transposeRDDRow(dataframe.drop(class_name).rdd)
-
+    val rdd = if (!transposedRDD.isEmpty) transposedRDD.filter { case (x, _) => br_columns.value.contains(br_attributes.value(x)._2) }
+    else {
+      val index_columns = dataframe.columns.dropRight(1).map(_.substring(4).toInt)
+      transposeRDDRow(dataframe.drop(class_name).rdd).map{ case (index, row) => (index_columns(index), row)}
+    }
 
     val f2 = rdd.map {
 
