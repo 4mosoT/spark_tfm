@@ -39,15 +39,14 @@ object DistributedFeatureSelection {
     }
 
     val start_time = System.currentTimeMillis()
-    val ss = SparkSession.builder().appName("distributed_feature_selection").master("local[*]").getOrCreate()
+    val ss = SparkSession.builder().appName("distributed_feature_selection").getOrCreate()
     val sc = ss.sparkContext
-
-
     sc.setLogLevel("ERROR")
 
-    val (train_rdd, test_rdd) = createRDDs(opts.dataset(), opts.test_dataset.toOption, opts.class_index(), sc)
+    val original_rdd = parse_RDD(sc.textFile(opts.dataset()), ',', opts.class_index())
+    val (train_rdd, test_rdd) = splitTrainTestRDD(original_rdd, opts.test_dataset.toOption, opts.class_index(), sc)
     println(s"TrainTest samples: ${train_rdd.count()} DataTest samples:${test_rdd.count()}")
-    val attributes = createAttributesMap(train_rdd, sc)
+    val attributes = createAttributesMap(original_rdd, sc)
     val br_attributes = sc.broadcast(attributes)
 
     val fs_algorithms = opts.fs_algorithms().split(",")
@@ -131,22 +130,17 @@ object DistributedFeatureSelection {
   }
 
 
-  def createRDDs(train_file: String, test_file: Option[String], class_first_column: Boolean, sc: SparkContext): (RDD[Array[String]], RDD[Array[String]]) = {
+  def splitTrainTestRDD(original_rdd: RDD[Array[String]], test_file: Option[String], class_first_column: Boolean, sc: SparkContext): (RDD[Array[String]], RDD[Array[String]]) = {
 
-    def parse_RDD(rdd: RDD[String], sep: Char): RDD[Array[String]] = rdd.map((x: String) => {
-      if (class_first_column) {
-        val result = x.split(sep)
-        result.drop(1) :+ result(0)
-      } else x.split(sep)
-    })
 
-    var train_rdd = parse_RDD(sc.textFile(train_file), ',')
+    var train_rdd = sc.emptyRDD[Array[String]]
     var test_rdd = sc.emptyRDD[Array[String]]
 
     if (test_file.isDefined) {
-      test_rdd = parse_RDD(sc.textFile(test_file.get), ',')
+      train_rdd = original_rdd
+      test_rdd = parse_RDD(sc.textFile(test_file.get), ',', class_first_column)
     } else {
-      val partitioned = train_rdd.map(row => (row.last, row)).groupByKey()
+      val partitioned = original_rdd.map(row => (row.last, row)).groupByKey()
         .flatMap {
           case (_, value) => value.zipWithIndex
         }
@@ -155,8 +149,6 @@ object DistributedFeatureSelection {
         }
       train_rdd = partitioned.filter(x => x._1 == 1 || x._1 == 2).map(_._2)
       test_rdd = partitioned.filter(_._1 == 0).map(_._2)
-
-
     }
     (train_rdd, test_rdd)
   }
@@ -408,6 +400,14 @@ object DistributedFeatureSelection {
     * Auxiliar Functions
     * ********************/
 
+
+  def parse_RDD(rdd: RDD[String], sep: Char, class_first_column: Boolean): RDD[Array[String]] = rdd.map((x: String) => {
+    if (class_first_column) {
+      val result = x.split(sep)
+      result.drop(1) :+ result(0)
+    } else x.split(sep)
+  })
+
   def createDataFrameFromFeatures(rdd: RDD[Array[String]], selected_features: RDD[String], br_attributes: Broadcast[Map[Int, (Option[Set[String]], String)]], ss: SparkSession): DataFrame = {
     val features = selected_features.collect()
     val selected_features_indexes = features.map(value => if (value != "class") value.substring(4).toInt else br_attributes.value.size - 1)
@@ -536,7 +536,7 @@ object DistributedFeatureSelection {
     val rdd = if (!transposedRDD.isEmpty) transposedRDD.filter { case (x, _) => br_columns.value.contains(br_attributes.value(x)._2) }
     else {
       val index_columns = dataframe.columns.dropRight(1).map(_.substring(4).toInt)
-      transposeRDDRow(dataframe.drop(class_name).rdd).map{ case (index, row) => (index_columns(index), row)}
+      transposeRDDRow(dataframe.drop(class_name).rdd).map { case (index, row) => (index_columns(index), row) }
     }
 
     val f1 = rdd.map {
@@ -601,7 +601,7 @@ object DistributedFeatureSelection {
     val rdd = if (!transposedRDD.isEmpty) transposedRDD.filter { case (x, _) => br_columns.value.contains(br_attributes.value(x)._2) }
     else {
       val index_columns = dataframe.columns.dropRight(1).map(_.substring(4).toInt)
-      transposeRDDRow(dataframe.drop(class_name).rdd).map{ case (index, row) => (index_columns(index), row)}
+      transposeRDDRow(dataframe.drop(class_name).rdd).map { case (index, row) => (index_columns(index), row) }
     }
 
     val f2 = rdd.map {

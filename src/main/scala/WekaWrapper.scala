@@ -65,8 +65,7 @@ object WekaWrapper {
   }
 
 
-
-   def attributesSchema(attributes: Map[Int, (Option[Set[String]], String)]): (util.ArrayList[Attribute], Int) = {
+  def attributesSchema(attributes: Map[Int, (Option[Set[String]], String)]): (util.ArrayList[Attribute], Int) = {
 
     //The list of attributes to create the Weka "Instances"
     val attributes_schema = new util.ArrayList[Attribute]()
@@ -97,7 +96,7 @@ object WekaWrapper {
 
     row.zipWithIndex.foreach({ case (value, index) =>
       if (attributes(index)._1.isDefined) {
-        instance.setValue(attributes_schema.get(index), value.asInstanceOf[String])
+          instance.setValue(attributes_schema.get(index), value.asInstanceOf[String])
       } else {
         instance.setValue(attributes_schema.get(index), value.toString.toDouble)
       }
