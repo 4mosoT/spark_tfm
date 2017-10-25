@@ -39,7 +39,7 @@ object DistributedFeatureSelection {
     }
 
     val start_time = System.currentTimeMillis()
-    val ss = SparkSession.builder().appName("distributed_feature_selection").getOrCreate()
+    val ss = SparkSession.builder().appName("distributed_feature_selection").master("local[*]").getOrCreate()
     val sc = ss.sparkContext
     sc.setLogLevel("ERROR")
 
@@ -201,7 +201,7 @@ object DistributedFeatureSelection {
         }
         val br_classes = sc.broadcast(br_attributes.value(br_attributes.value.size - 1)._1.get)
         for (_ <- 1 to rounds) {
-          val result = verticalPartitioningFeatureSelection(sc, shuffleRDD(rdd_no_class_column),
+          val result = verticalPartitioningFeatureSelection(sc, rdd_no_class_column,
             br_class_column, br_classes, br_attributes, numParts, filter, overlap, ranking_features)
           sub_votes = sub_votes ++ result.map(x => (x._1, x._2._1))
           times = times ++ result.map(x => x._2._2)
@@ -213,7 +213,7 @@ object DistributedFeatureSelection {
         val (schema, class_schema_index) = WekaWrapper.attributesSchema(br_attributes.value)
         val br_schema = sc.broadcast(schema)
         for (_ <- 1 to rounds) {
-          val result = horizontalPartitioningFeatureSelection(sc, shuffleRDD(rdd),
+          val result = horizontalPartitioningFeatureSelection(sc, rdd,
             br_attributes, numParts, filter, br_schema, class_schema_index, ranking_features)
           sub_votes = sub_votes ++ result.map(x => (x._1, x._2._1))
           times = times ++ result.map(x => x._2._2)
@@ -337,7 +337,11 @@ object DistributedFeatureSelection {
     input.map(row => (row.last, row)).groupByKey()
       .flatMap({
         // Add an index for each subset (keys)
-        case (_, value) => value.zipWithIndex
+
+        case (_, value) =>
+          //Trick to shuffle rows
+          val tozip = scala.util.Random.shuffle(1 to value.size)
+          value.zip(tozip)
       })
       .map {
         // Get the partition number for each row and make it the new key
@@ -377,8 +381,11 @@ object DistributedFeatureSelection {
     val br_overlapping = sc.broadcast(overlapping.collect().toIterable)
 
     //Remove the class column and assign a partition to each column
-    transposed.subtract(overlapping)
-      .zipWithIndex.map(line => (line._2 % numParts, line._1))
+
+    val no_overlaped = transposed.subtract(overlapping)
+    //Trick to shuffle columns
+    val tozip = sc.broadcast(scala.util.Random.shuffle(1 to no_overlaped.count().toInt))
+    no_overlaped.map(line => (tozip.value(line._1) % numParts, (line._1, line._2)))
       .groupByKey().flatMap {
       case (_, iter) =>
         val start_time = System.currentTimeMillis()
@@ -455,13 +462,6 @@ object DistributedFeatureSelection {
       }
     }: _*)
 
-  }
-
-  def shuffleRDD[B: ClassTag](rdd: RDD[B]): RDD[B] = {
-    rdd.mapPartitions(iter => {
-      val rng = new scala.util.Random()
-      iter.map((rng.nextInt, _))
-    }).partitionBy(new HashPartitioner(rdd.partitions.length)).values
   }
 
   def createPipeline(columns: RDD[String],
