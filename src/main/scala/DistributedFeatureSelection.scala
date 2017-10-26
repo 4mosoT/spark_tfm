@@ -1,5 +1,6 @@
 import java.util
 
+import org.apache.spark.SparkContext
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.ml.classification._
 import org.apache.spark.ml.evaluation.MulticlassClassificationEvaluator
@@ -9,13 +10,11 @@ import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.types.{StringType, StructField, StructType}
 import org.apache.spark.sql.{DataFrame, Row, SparkSession}
-import org.apache.spark.{HashPartitioner, SparkContext}
 import org.rogach.scallop.{ScallopConf, ScallopOption}
 import weka.core.{Attribute, Instances}
 import weka.filters.Filter
 
 import scala.collection.mutable
-import scala.reflect.ClassTag
 
 
 object DistributedFeatureSelection {
@@ -45,6 +44,8 @@ object DistributedFeatureSelection {
 
     val original_rdd = parse_RDD(sc.textFile(opts.dataset()), ',', opts.class_index())
     val (train_rdd, test_rdd) = splitTrainTestRDD(original_rdd, opts.test_dataset.toOption, opts.class_index(), sc)
+    train_rdd.cache()
+    test_rdd.cache()
     println(s"TrainTest samples: ${train_rdd.count()} DataTest samples:${test_rdd.count()}")
     val attributes = createAttributesMap(original_rdd, sc)
     val br_attributes = sc.broadcast(attributes)
@@ -209,6 +210,7 @@ object DistributedFeatureSelection {
             cfs_selected = cfs_selected ++ result.map(x => x._2._3)
           }
         }
+
       } else {
         val (schema, class_schema_index) = WekaWrapper.attributesSchema(br_attributes.value)
         val br_schema = sc.broadcast(schema)
@@ -221,9 +223,11 @@ object DistributedFeatureSelection {
             cfs_selected = cfs_selected ++ result.map(x => x._2._3)
           }
         }
+        br_schema.unpersist()
       }
       sub_votes.reduceByKey(_ + _)
     }
+
     (votes, times, cfs_selected)
   }
 
@@ -340,8 +344,7 @@ object DistributedFeatureSelection {
 
         case (_, value) =>
           //Trick to shuffle rows
-          val tozip = scala.util.Random.shuffle(1 to value.size)
-          value.zip(tozip)
+          value.zip(scala.util.Random.shuffle(1 to value.size))
       })
       .map {
         // Get the partition number for each row and make it the new key
@@ -378,18 +381,18 @@ object DistributedFeatureSelection {
     if (overlap > 0) {
       overlapping = transposed.sample(withReplacement = false, overlap)
     }
-    val br_overlapping = sc.broadcast(overlapping.collect().toIterable)
+    val br_overlapping = overlapping.collect().toIterable
 
     //Remove the class column and assign a partition to each column
 
     val no_overlaped = transposed.subtract(overlapping)
     //Trick to shuffle columns
-    val tozip = sc.broadcast(scala.util.Random.shuffle(1 to no_overlaped.count().toInt))
-    no_overlaped.map(line => (tozip.value(line._1) % numParts, (line._1, line._2)))
+    val tozip = scala.util.Random.shuffle(1 to no_overlaped.count().toInt)
+    val partitioned = no_overlaped.map(line => (tozip(line._1) % numParts, (line._1, line._2)))
       .groupByKey().flatMap {
       case (_, iter) =>
         val start_time = System.currentTimeMillis()
-        val data = WekaWrapper.createInstancesFromTranspose(iter ++ br_overlapping.value, br_attributes.value, br_class_column.value, br_classes.value)
+        val data = WekaWrapper.createInstancesFromTranspose(iter ++ br_overlapping, br_attributes.value, br_class_column.value, br_classes.value)
         val filtered_data = Filter.useFilter(data, WekaWrapper.filterAttributes(data, filter, ranking_features))
         val time = System.currentTimeMillis() - start_time
         val selected_attributes = WekaWrapper.getAttributes(filtered_data)
@@ -399,8 +402,9 @@ object DistributedFeatureSelection {
 
 
     }.reduceByKey((t1, t2) => (t1._1 + t2._1, math.max(t1._2, t2._2), math.max(t1._3, t2._3)))
-
-
+//    tozip.destroy()
+//    br_overlapping.destroy()
+    partitioned
   }
 
   /** *******************
@@ -590,6 +594,9 @@ object DistributedFeatureSelection {
         }
         sumMean / sumVar
     }.max
+    br_columns.destroy()
+    br_proportionClassMap.destroy()
+    class_column.destroy()
     1 / f1
   }
 
@@ -671,8 +678,10 @@ object DistributedFeatureSelection {
           }
         }
         result
-    }
-    f2.sum()
+    }.sum()
+    class_column.destroy()
+    br_columns.destroy()
+    f2
 
   }
 
