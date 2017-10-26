@@ -38,17 +38,19 @@ object DistributedFeatureSelection {
     }
 
     val start_time = System.currentTimeMillis()
-    val ss = SparkSession.builder().appName("distributed_feature_selection").master("local[*]").getOrCreate()
+    val ss = SparkSession.builder().appName("distributed_feature_selection")//.master("local[*]")
+      .getOrCreate()
     val sc = ss.sparkContext
     sc.setLogLevel("ERROR")
 
     val original_rdd = parse_RDD(sc.textFile(opts.dataset()), ',', opts.class_index())
-    val (train_rdd, test_rdd) = splitTrainTestRDD(original_rdd, opts.test_dataset.toOption, opts.class_index(), sc)
+    val attributes = createAttributesMap(original_rdd, sc)
+    val br_attributes = sc.broadcast(attributes)
+    val (train_rdd, test_rdd) = splitTrainTestRDD(br_attributes, original_rdd, opts.test_dataset.toOption, opts.class_index(), sc)
     train_rdd.cache()
     test_rdd.cache()
     println(s"TrainTest samples: ${train_rdd.count()} DataTest samples:${test_rdd.count()}")
-    val attributes = createAttributesMap(original_rdd, sc)
-    val br_attributes = sc.broadcast(attributes)
+
 
     val fs_algorithms = opts.fs_algorithms().split(",")
     val comp_measures = opts.complexity_measure().split(",")
@@ -131,7 +133,7 @@ object DistributedFeatureSelection {
   }
 
 
-  def splitTrainTestRDD(original_rdd: RDD[Array[String]], test_file: Option[String], class_first_column: Boolean, sc: SparkContext): (RDD[Array[String]], RDD[Array[String]]) = {
+  def splitTrainTestRDD(br_attributes: Broadcast[Map[Int, (Option[Set[String]], String)]], original_rdd: RDD[Array[String]], test_file: Option[String], class_first_column: Boolean, sc: SparkContext): (RDD[Array[String]], RDD[Array[String]]) = {
 
 
     var train_rdd = sc.emptyRDD[Array[String]]
@@ -141,13 +143,11 @@ object DistributedFeatureSelection {
       train_rdd = original_rdd
       test_rdd = parse_RDD(sc.textFile(test_file.get), ',', class_first_column)
     } else {
-      val partitioned = original_rdd.map(row => (row.last, row)).groupByKey()
-        .flatMap {
-          case (_, value) => value.zipWithIndex
-        }
-        .map {
-          case (row, index) => (index % 3, row)
-        }
+      val classes = br_attributes.value(br_attributes.value.size - 1)._1.get
+      var partitioned = sc.emptyRDD[(Long, Array[String])]
+      classes.foreach(_class => {
+        partitioned ++= original_rdd.filter(_.last == _class).zipWithIndex().map { case (row: Array[String], index: Long) => (index % 3, row) }
+      })
       train_rdd = partitioned.filter(x => x._1 == 1 || x._1 == 2).map(_._2)
       test_rdd = partitioned.filter(_._1 == 0).map(_._2)
     }
@@ -338,18 +338,14 @@ object DistributedFeatureSelection {
                                              br_attributes_schema: Broadcast[util.ArrayList[Attribute]],
                                              class_schema_index: Int, ranking_features: Int): RDD[(String, (Int, Long, Int))] = {
 
-    input.map(row => (row.last, row)).groupByKey()
-      .flatMap({
-        // Add an index for each subset (keys)
-
-        case (_, value) =>
-          //Trick to shuffle rows
-          value.zip(scala.util.Random.shuffle(1 to value.size))
-      })
-      .map {
-        // Get the partition number for each row and make it the new key
-        case (row: Array[String], index: Int) => (index % numParts, row)
-      }
+    val classes = br_attributes.value(br_attributes.value.size - 1)._1.get
+    var mergedRDD = sc.emptyRDD[(Int, Array[String])]
+    classes.foreach(_class => {
+      val auxRDD = input.filter(_.last == _class)
+      val tozip = scala.util.Random.shuffle(0 to auxRDD.count().toInt)
+      mergedRDD ++= auxRDD.zipWithIndex().map { case (row: Array[String], index: Long) => (tozip(index.toInt) % numParts, row) }
+    })
+    mergedRDD
       .combineByKey(
         (row: Array[String]) => {
           val data = new Instances("Rel", br_attributes_schema.value, 0)
@@ -383,9 +379,8 @@ object DistributedFeatureSelection {
     }
     val br_overlapping = overlapping.collect().toIterable
 
-    //Remove the class column and assign a partition to each column
-
     val no_overlaped = transposed.subtract(overlapping)
+
     //Trick to shuffle columns
     val tozip = scala.util.Random.shuffle(1 to no_overlaped.count().toInt)
     val partitioned = no_overlaped.map(line => (tozip(line._1) % numParts, (line._1, line._2)))
@@ -402,8 +397,8 @@ object DistributedFeatureSelection {
 
 
     }.reduceByKey((t1, t2) => (t1._1 + t2._1, math.max(t1._2, t2._2), math.max(t1._3, t2._3)))
-//    tozip.destroy()
-//    br_overlapping.destroy()
+    //    tozip.destroy()
+    //    br_overlapping.destroy()
     partitioned
   }
 
