@@ -47,7 +47,7 @@ object DistributedFeatureSelection {
 
     //Filter classes with only 1 example
     val one_sample_key = unfiltered_rdd.map(x => (x.last, x)).countByKey().filter(_._2 <= 1).keySet
-    val original_rdd = unfiltered_rdd.filter( x => !one_sample_key.contains(x.last))
+    val original_rdd = unfiltered_rdd.filter(x => !one_sample_key.contains(x.last))
 
     val attributes = createAttributesMap(original_rdd, sc)
     val br_attributes = sc.broadcast(attributes)
@@ -610,7 +610,6 @@ object DistributedFeatureSelection {
       val index_columns = dataframe.columns.dropRight(1).map(_.substring(4).toInt)
       transposeRDDRow(dataframe.drop(class_name).rdd).map { case (index, row) => (index_columns(index), row) }
     }
-    println(dataframe.groupBy("class").count().show())
     val f2 = rdd.map {
 
       case (column_index, row) =>
@@ -666,10 +665,10 @@ object DistributedFeatureSelection {
             br_attributes.value(class_index)._1.get.foreach { sub_class_ =>
               if (!computed_classes.contains(sub_class_)) {
                 val datasetK = zipped_row.filter(_._2 == sub_class_).map(_._1.toString.toDouble)
-                  minmaxi = Seq(datasetC.max, datasetK.max).min
-                  maxmini = Seq(datasetC.min, datasetK.min).max
-                  maxmaxi = Seq(datasetC.max, datasetK.max).max
-                  minmini = Seq(datasetC.min, datasetK.min).min
+                minmaxi = Seq(datasetC.max, datasetK.max).min
+                maxmini = Seq(datasetC.min, datasetK.min).max
+                maxmaxi = Seq(datasetC.max, datasetK.max).max
+                minmini = Seq(datasetC.min, datasetK.min).min
               }
 
             }
