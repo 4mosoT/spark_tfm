@@ -38,19 +38,23 @@ object DistributedFeatureSelection {
     }
 
     val start_time = System.currentTimeMillis()
-    val ss = SparkSession.builder().appName("distributed_feature_selection")//.master("local[*]")
+    val ss = SparkSession.builder().appName("distributed_feature_selection").master("local[*]")
       .getOrCreate()
     val sc = ss.sparkContext
     sc.setLogLevel("ERROR")
 
-    val original_rdd = parse_RDD(sc.textFile(opts.dataset()), ',', opts.class_index())
+    val unfiltered_rdd = parse_RDD(sc.textFile(opts.dataset()), ',', opts.class_index())
+
+    //Filter classes with only 1 example
+    val one_sample_key = unfiltered_rdd.map(x => (x.last, x)).countByKey().filter(_._2 <= 1).keySet
+    val original_rdd = unfiltered_rdd.filter( x => !one_sample_key.contains(x.last))
+
     val attributes = createAttributesMap(original_rdd, sc)
     val br_attributes = sc.broadcast(attributes)
     val (train_rdd, test_rdd) = splitTrainTestRDD(br_attributes, original_rdd, opts.test_dataset.toOption, opts.class_index(), sc)
     train_rdd.cache()
     test_rdd.cache()
     println(s"TrainTest samples: ${train_rdd.count()} DataTest samples:${test_rdd.count()}")
-
 
     val fs_algorithms = opts.fs_algorithms().split(",")
     val comp_measures = opts.complexity_measure().split(",")
@@ -314,8 +318,9 @@ object DistributedFeatureSelection {
     val evaluator = new MulticlassClassificationEvaluator().setLabelCol("label")
       .setPredictionCol("prediction").setMetricName("accuracy")
 
-
-    Seq(("SMV", new OneVsRest().setClassifier(new LinearSVC())), ("Decision Tree", new DecisionTreeClassifier()),
+    val iterations = (br_attributes.value(br_attributes.value.size - 1)._1.size * -3.5 + 106).toInt
+    val tol = if (br_attributes.value(br_attributes.value.size - 1)._1.size > 10) 1E-6 else 1E-4
+    Seq(("SMV", new OneVsRest().setClassifier(new LinearSVC().setMaxIter(iterations).setTol(tol))), ("Decision Tree", new DecisionTreeClassifier()),
       ("Naive Bayes", new NaiveBayes()), ("KNN", new KNNClassifier().setTopTreeSize(transformed_train_dataset.count().toInt / 500 + 1).setK(1)))
       .foreach {
 
@@ -605,7 +610,7 @@ object DistributedFeatureSelection {
       val index_columns = dataframe.columns.dropRight(1).map(_.substring(4).toInt)
       transposeRDDRow(dataframe.drop(class_name).rdd).map { case (index, row) => (index_columns(index), row) }
     }
-
+    println(dataframe.groupBy("class").count().show())
     val f2 = rdd.map {
 
       case (column_index, row) =>
@@ -651,6 +656,7 @@ object DistributedFeatureSelection {
         } else {
           br_attributes.value(class_index)._1.get.foreach { _class_ =>
             val datasetC = zipped_row.filter(_._2 == _class_).map(_._1.toString.toDouble)
+            computed_classes += _class_.toString
 
             var minmaxi = 0.0
             var maxmini = 0.0
@@ -660,11 +666,10 @@ object DistributedFeatureSelection {
             br_attributes.value(class_index)._1.get.foreach { sub_class_ =>
               if (!computed_classes.contains(sub_class_)) {
                 val datasetK = zipped_row.filter(_._2 == sub_class_).map(_._1.toString.toDouble)
-
-                minmaxi = Seq(datasetC.max, datasetK.max).min
-                maxmini = Seq(datasetC.min, datasetK.min).max
-                maxmaxi = Seq(datasetC.max, datasetK.max).max
-                minmini = Seq(datasetC.min, datasetK.min).min
+                  minmaxi = Seq(datasetC.max, datasetK.max).min
+                  maxmini = Seq(datasetC.min, datasetK.min).max
+                  maxmaxi = Seq(datasetC.max, datasetK.max).max
+                  minmini = Seq(datasetC.min, datasetK.min).min
               }
 
             }
