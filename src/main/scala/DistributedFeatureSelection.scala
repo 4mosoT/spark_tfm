@@ -38,7 +38,7 @@ object DistributedFeatureSelection {
     }
 
     val start_time = System.currentTimeMillis()
-    val ss = SparkSession.builder().appName("distributed_feature_selection").master("local[*]")
+    val ss = SparkSession.builder().appName("distributed_feature_selection")//.master("local[*]")
       .getOrCreate()
     val sc = ss.sparkContext
     sc.setLogLevel("ERROR")
@@ -623,7 +623,6 @@ object DistributedFeatureSelection {
           //If we have categorical values we need to discretize them.
           // We use zipWithIndex where its index is its discretize value.
           val values = br_attributes.value(column_index)._1.get.zipWithIndex.map { case (value, sub_index) => value -> (sub_index + 1) }.toMap
-
 
           var minmaxi = 0
           var maxmini = 0
