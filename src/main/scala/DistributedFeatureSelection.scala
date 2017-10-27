@@ -38,7 +38,7 @@ object DistributedFeatureSelection {
     }
 
     val start_time = System.currentTimeMillis()
-    val ss = SparkSession.builder().appName("distributed_feature_selection") //.master("local[*]")
+    val ss = SparkSession.builder().appName("distributed_feature_selection") .master("local[*]")
       .getOrCreate()
     val sc = ss.sparkContext
     sc.setLogLevel("ERROR")
@@ -270,7 +270,8 @@ object DistributedFeatureSelection {
         val selected_features_rdd = rdd.map(row => row.zipWithIndex.filter { case (_, index) => selected_features_indexes.contains(index) })
         val retained_feat_percent = (selected_features_indexes.length.toDouble / br_attributes.value.size - 1) * 100
 
-        val schema = StructType(selected_features.sortBy(x => if (x != "class") x.substring(4).toInt else br_attributes.value.size).map(name => StructField(name, StringType, true)).collect())
+        val struct = true
+        val schema = StructType(selected_features.sortBy(x => if (x != "class") x.substring(4).toInt else br_attributes.value.size).map(name => StructField(name, StringType, struct)).collect())
         val selected_features_dataframe = ss.createDataFrame(selected_features_rdd.map(row => Row.fromSeq(row.map(_._1))), schema = schema)
 
         if (classifier.isDefined) {
@@ -429,7 +430,8 @@ object DistributedFeatureSelection {
     val features = selected_features.collect()
     val selected_features_indexes = features.map(value => if (value != "class") value.substring(4).toInt else br_attributes.value.size - 1)
     val selected_features_rdd = rdd.map(row => row.zipWithIndex.filter { case (_, index) => selected_features_indexes.contains(index) })
-    val schema = StructType(features.sortBy(x => if (x != "class") x.substring(4).toInt else br_attributes.value.size).map(name => StructField(name, StringType, true)))
+    val struct = true
+    val schema = StructType(features.sortBy(x => if (x != "class") x.substring(4).toInt else br_attributes.value.size).map(name => StructField(name, StringType, struct)))
     ss.createDataFrame(selected_features_rdd.map(row => Row.fromSeq(row.map(_._1))), schema = schema)
   }
 
