@@ -38,7 +38,7 @@ object DistributedFeatureSelection {
     }
 
     val start_time = System.currentTimeMillis()
-    val ss = SparkSession.builder().appName("distributed_feature_selection")//.master("local[*]")
+    val ss = SparkSession.builder().appName("distributed_feature_selection") //.master("local[*]")
       .getOrCreate()
     val sc = ss.sparkContext
     sc.setLogLevel("ERROR")
@@ -46,7 +46,7 @@ object DistributedFeatureSelection {
     val unfiltered_rdd = parse_RDD(sc.textFile(opts.dataset()), ',', opts.class_index())
 
     //Filter classes with only 1 example
-    val one_sample_key = unfiltered_rdd.map(x => (x.last, x)).countByKey().filter(_._2 <= 1).keySet
+    val one_sample_key = unfiltered_rdd.map(x => (x.last, x)).countByKey().filter(_._2 < 1).keySet
     val original_rdd = unfiltered_rdd.filter(x => !one_sample_key.contains(x.last))
 
     val attributes = createAttributesMap(original_rdd, sc)
@@ -54,7 +54,6 @@ object DistributedFeatureSelection {
     val (train_rdd, test_rdd) = splitTrainTestRDD(br_attributes, original_rdd, opts.test_dataset.toOption, opts.class_index(), sc)
     train_rdd.cache()
     test_rdd.cache()
-    println(s"TrainTest samples: ${train_rdd.count()} DataTest samples:${test_rdd.count()}")
 
     val fs_algorithms = opts.fs_algorithms().split(",")
     val comp_measures = opts.complexity_measure().split(",")
@@ -118,10 +117,9 @@ object DistributedFeatureSelection {
           cfs_features_selected = features.count().toInt
         }
 
+        /** Here we evaluate several algorithms with the selected features **/
         val train_dataframe = createDataFrameFromFeatures(train_rdd, features, br_attributes, ss)
         val test_dataframe = createDataFrameFromFeatures(test_rdd, features, br_attributes, ss)
-
-        /** Here we evaluate several algorithms with the selected features **/
         val evaluation_time = System.currentTimeMillis()
         evaluateFeatures(train_dataframe, test_dataframe, br_attributes, features, sc)
         println(s"Evaluation time is ${System.currentTimeMillis() - evaluation_time}")
@@ -133,6 +131,7 @@ object DistributedFeatureSelection {
     }
 
     println(s"Total script time is ${System.currentTimeMillis() - start_time}")
+    println(s"TrainTest samples: ${train_rdd.count()} DataTest samples:${test_rdd.count()}")
 
   }
 
@@ -209,9 +208,9 @@ object DistributedFeatureSelection {
           val result = verticalPartitioningFeatureSelection(sc, rdd_no_class_column,
             br_class_column, br_classes, br_attributes, numParts, filter, overlap, ranking_features)
           sub_votes = sub_votes ++ result.map(x => (x._1, x._2._1))
-          times = times ++ result.map(x => x._2._2)
+          times ++= result.map(x => x._2._2)
           if (filter == "CFS") {
-            cfs_selected = cfs_selected ++ result.map(x => x._2._3)
+            cfs_selected ++= result.map(x => x._2._3)
           }
         }
 
@@ -222,9 +221,9 @@ object DistributedFeatureSelection {
           val result = horizontalPartitioningFeatureSelection(sc, rdd,
             br_attributes, numParts, filter, br_schema, class_schema_index, ranking_features)
           sub_votes = sub_votes ++ result.map(x => (x._1, x._2._1))
-          times = times ++ result.map(x => x._2._2)
+          times ++= result.map(x => x._2._2)
           if (filter == "CFS") {
-            cfs_selected = cfs_selected ++ result.map(x => x._2._3)
+            cfs_selected ++= result.map(x => x._2._3)
           }
         }
         br_schema.unpersist()
@@ -315,13 +314,20 @@ object DistributedFeatureSelection {
     val transformed_test_dataset = new Pipeline().setStages(pipeline_stages).fit(casted_test_dataframe).transform(casted_test_dataframe)
     transformed_test_dataset.cache()
 
+
+
     val evaluator = new MulticlassClassificationEvaluator().setLabelCol("label")
       .setPredictionCol("prediction").setMetricName("accuracy")
 
-    val iterations = (br_attributes.value(br_attributes.value.size - 1)._1.size * -3.5 + 106).toInt
-    val tol = if (br_attributes.value(br_attributes.value.size - 1)._1.size > 10) 1E-6 else 1E-4
-    Seq(("SMV", new OneVsRest().setClassifier(new LinearSVC().setMaxIter(iterations).setTol(tol))), ("Decision Tree", new DecisionTreeClassifier()),
-      ("Naive Bayes", new NaiveBayes()), ("KNN", new KNNClassifier().setTopTreeSize(transformed_train_dataset.count().toInt / 500 + 1).setK(1)))
+    //    val iterations = (br_attributes.value(br_attributes.value.size - 1)._1.size * -3.5 + 106).toInt
+    //    val tol = if (br_attributes.value(br_attributes.value.size - 1)._1.size > 10) 1E-6 else 1E-4
+    //    ("SMV", new OneVsRest().setClassifier(new LinearSVC().setMaxIter(iterations).setTol(tol))),
+    Seq(
+      ("Decision Tree", new DecisionTreeClassifier()),
+      ("Naive Bayes", new NaiveBayes()),
+      ("KNN", new KNNClassifier().setTopTreeSize(transformed_train_dataset.count().toInt / 500 + 1).setK(1))
+
+    )
       .foreach {
 
         case (name, classi) =>
@@ -498,7 +504,10 @@ object DistributedFeatureSelection {
       //Creation of pipeline // Transform class column from categorical to index //Assemble features
 
       val pipeline: Array[PipelineStage] = stages_columns._1 ++
-        Array(new StringIndexer().setInputCol(attributes.value(class_index)._2).setOutputCol("label"), new VectorAssembler().setInputCols(columns_to_assemble).setOutputCol("features"))
+        Array(new StringIndexer().setInputCol(attributes.value(class_index)._2).setOutputCol("label"),
+          new VectorAssembler().setInputCols(columns_to_assemble).setOutputCol("noscaledfeatures"),
+          new MinMaxScaler().setInputCol("noscaledfeatures").setOutputCol("features")
+        )
 
       (pipeline, columns_to_assemble)
 
