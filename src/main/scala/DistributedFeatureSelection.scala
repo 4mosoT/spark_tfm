@@ -198,10 +198,10 @@ object DistributedFeatureSelection {
       if (vertical) {
         // Get the class column
         val br_class_column = sc.broadcast(transpose_input.filter {
-          case (columnindex, row) => columnindex == br_attributes.value.size - 1
+          case (columnindex, _) => columnindex == br_attributes.value.size - 1
         }.first())
         val rdd_no_class_column = transpose_input.filter {
-          case (columnindex, row) => columnindex != br_attributes.value.size - 1
+          case (columnindex, _) => columnindex != br_attributes.value.size - 1
         }
         val br_classes = sc.broadcast(br_attributes.value(br_attributes.value.size - 1)._1.get)
         for (_ <- 1 to rounds) {
@@ -542,7 +542,6 @@ object DistributedFeatureSelection {
   def fisherRatio(dataframe: DataFrame, br_attributes: Broadcast[Map[Int, (Option[Set[String]], String)]], sc: SparkContext, transposedRDD: RDD[(Int, Seq[String])]): Double = {
 
     // ProportionclassMap => Class -> Proportion of class
-    val class_index = br_attributes.value.size - 1
     val class_name = "class"
     val samples = dataframe.count().toDouble
     val br_proportionClassMap = sc.broadcast(dataframe.groupBy(class_name).count().rdd.map(row => row(0) -> (row(1).asInstanceOf[Long] / samples.toDouble)).collect().toMap)
