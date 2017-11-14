@@ -38,7 +38,7 @@ object DistributedFeatureSelection {
     }
 
     val start_time = System.currentTimeMillis()
-    val ss = SparkSession.builder().appName("distributed_feature_selection") .master("local[*]")
+    val ss = SparkSession.builder().appName("distributed_feature_selection") //.master("local[*]")
       .getOrCreate()
     val sc = ss.sparkContext
     sc.setLogLevel("ERROR")
@@ -320,14 +320,11 @@ object DistributedFeatureSelection {
     val evaluator = new MulticlassClassificationEvaluator().setLabelCol("label")
       .setPredictionCol("prediction").setMetricName("accuracy")
 
-    //    val iterations = (br_attributes.value(br_attributes.value.size - 1)._1.size * -3.5 + 106).toInt
-    //    val tol = if (br_attributes.value(br_attributes.value.size - 1)._1.size > 10) 1E-6 else 1E-4
-    //    ("SMV", new OneVsRest().setClassifier(new LinearSVC().setMaxIter(iterations).setTol(tol))),
     Seq(
+      ("SMV", new OneVsRest().setClassifier(new LinearSVC())),
       ("Decision Tree", new DecisionTreeClassifier()),
-      ("Naive Bayes", new NaiveBayes()),
-      ("KNN", new KNNClassifier().setTopTreeSize(transformed_train_dataset.count().toInt / 500 + 1).setK(1))
-
+      ("Naive Bayes", new NaiveBayes())
+      //("KNN", new KNNClassifier().setTopTreeSize(transformed_train_dataset.count().toInt / 500 + 1).setK(1))
     )
       .foreach {
 
