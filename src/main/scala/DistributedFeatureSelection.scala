@@ -38,7 +38,7 @@ object DistributedFeatureSelection {
     }
 
     val start_time = System.currentTimeMillis()
-    val ss = SparkSession.builder().appName("distributed_feature_selection") //.master("local[*]")
+    val ss = SparkSession.builder().appName("distributed_feature_selection")// .master("local[*]")
       .getOrCreate()
     val sc = ss.sparkContext
     sc.setLogLevel("ERROR")
@@ -198,10 +198,10 @@ object DistributedFeatureSelection {
       if (vertical) {
         // Get the class column
         val br_class_column = sc.broadcast(transpose_input.filter {
-          case (columnindex, row) => columnindex == br_attributes.value.size - 1
+          case (columnindex, _) => columnindex == br_attributes.value.size - 1
         }.first())
         val rdd_no_class_column = transpose_input.filter {
-          case (columnindex, row) => columnindex != br_attributes.value.size - 1
+          case (columnindex, _) => columnindex != br_attributes.value.size - 1
         }
         val br_classes = sc.broadcast(br_attributes.value(br_attributes.value.size - 1)._1.get)
         for (_ <- 1 to rounds) {
@@ -310,9 +310,11 @@ object DistributedFeatureSelection {
     val casted_train_dataframe = castDFToDouble(train_dataframe, columns_to_cast)
     val casted_test_dataframe = castDFToDouble(test_dataframe, columns_to_cast)
 
-    val transformed_train_dataset = new Pipeline().setStages(pipeline_stages).fit(casted_train_dataframe).transform(casted_train_dataframe)
+    val fittedpipeline = new Pipeline().setStages(pipeline_stages).fit(casted_train_dataframe.union(casted_test_dataframe))
+
+    val transformed_train_dataset = fittedpipeline.transform(casted_train_dataframe)
     transformed_train_dataset.cache()
-    val transformed_test_dataset = new Pipeline().setStages(pipeline_stages).fit(casted_test_dataframe).transform(casted_test_dataframe)
+    val transformed_test_dataset = fittedpipeline.transform(casted_test_dataframe)
     transformed_test_dataset.cache()
 
 
@@ -320,11 +322,13 @@ object DistributedFeatureSelection {
     val evaluator = new MulticlassClassificationEvaluator().setLabelCol("label")
       .setPredictionCol("prediction").setMetricName("accuracy")
 
+
     Seq(
       ("SMV", new OneVsRest().setClassifier(new LinearSVC())),
       ("Decision Tree", new DecisionTreeClassifier()),
-      ("Naive Bayes", new NaiveBayes())
-      //("KNN", new KNNClassifier().setTopTreeSize(transformed_train_dataset.count().toInt / 500 + 1).setK(1))
+      ("Naive Bayes", new NaiveBayes()),
+      ("KNN", new KNNClassifier().setTopTreeSize(transformed_train_dataset.count().toInt / 500 + 1).setK(1))
+
     )
       .foreach {
 
@@ -538,7 +542,6 @@ object DistributedFeatureSelection {
   def fisherRatio(dataframe: DataFrame, br_attributes: Broadcast[Map[Int, (Option[Set[String]], String)]], sc: SparkContext, transposedRDD: RDD[(Int, Seq[String])]): Double = {
 
     // ProportionclassMap => Class -> Proportion of class
-    val class_index = br_attributes.value.size - 1
     val class_name = "class"
     val samples = dataframe.count().toDouble
     val br_proportionClassMap = sc.broadcast(dataframe.groupBy(class_name).count().rdd.map(row => row(0) -> (row(1).asInstanceOf[Long] / samples.toDouble)).collect().toMap)
