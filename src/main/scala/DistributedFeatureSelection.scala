@@ -38,7 +38,7 @@ object DistributedFeatureSelection {
     }
 
     val start_time = System.currentTimeMillis()
-    val ss = SparkSession.builder().appName("distributed_feature_selection")// .master("local[*]")
+    val ss = SparkSession.builder().appName("distributed_feature_selection").master("local[*]")
       .getOrCreate()
     val sc = ss.sparkContext
     sc.setLogLevel("ERROR")
@@ -104,12 +104,10 @@ object DistributedFeatureSelection {
         }
 
         /** Here we get the selected features **/
-        val threshold_time = System.currentTimeMillis()
         val features = computeThreshold(train_rdd, votes, opts.alpha(), classifier, br_attributes, opts.partType(),
           opts.numParts(), 5, transposed_rdd, globalCompyMeasure, ss)
 
         println(s"Number of features is ${features.count() - 1}")
-        println(s"Total threshold computation in ${System.currentTimeMillis() - threshold_time}")
         println(s"Feature selection computation time is ${System.currentTimeMillis() - start_sub_time} (votes + threshold)")
 
 
