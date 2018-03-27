@@ -26,7 +26,7 @@ object DistributedFeatureSelection {
     val opts = new ScallopConf(args) {
       banner("\nUsage of this program example: -d connect-4.csv -p 5 CFS,IG,CF  F1,F2 \n\n")
       val dataset: ScallopOption[String] = opt[String]("dataset", required = true, descr = "Dataset to use in CSV format / Class must be last or first column")
-      val test_dataset: ScallopOption[String] = opt[String]("test dataset", descr = "Train dataset to use in CSV format / Class must be last or first column")
+      val test_dataset: ScallopOption[String] = opt[String]("test dataset", descr = "Test dataset to use in CSV format / Class must be last or first column")
       val partType: ScallopOption[Boolean] = toggle("vertical", default = Some(false), descrYes = "Vertical partitioning / Default Horizontal")
       val overlap: ScallopOption[Double] = opt[Double]("overlap", default = Some(0.0), descr = "Overlap")
       val class_index: ScallopOption[Boolean] = toggle("first", noshort = true, default = Some(false), descrYes = "Required if class is first column")
@@ -270,6 +270,7 @@ object DistributedFeatureSelection {
 
         val struct = true
         val schema = StructType(selected_features.sortBy(x => if (x != "class") x.substring(4).toInt else br_attributes.value.size).map(name => StructField(name, StringType, struct)).collect())
+        println(s"Number of features to be dataframed: ${selected_features_rdd.count()}")
         val selected_features_dataframe = ss.createDataFrame(selected_features_rdd.map(row => Row.fromSeq(row.map(_._1))), schema = schema)
 
         if (classifier.isDefined) {
@@ -432,6 +433,7 @@ object DistributedFeatureSelection {
     val struct = true
     val schema = StructType(features.sortBy(x => if (x != "class") x.substring(4).toInt else br_attributes.value.size).map(name => StructField(name, StringType, struct)))
     ss.createDataFrame(selected_features_rdd.map(row => Row.fromSeq(row.map(_._1))), schema = schema)
+
   }
 
   def parseNumeric(s: String): Option[Double] = {
