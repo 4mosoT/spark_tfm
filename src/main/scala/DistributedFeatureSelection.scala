@@ -270,7 +270,7 @@ object DistributedFeatureSelection {
 
         val struct = true
         val schema = StructType(selected_features.sortBy(x => if (x != "class") x.substring(4).toInt else br_attributes.value.size).map(name => StructField(name, StringType, struct)).collect())
-        println(s"Number of features to be dataframed: ${selected_features_rdd.count()}")
+        println(s"Number of features to be dataframed: ${selected_features_rdd.first.length}")
         val selected_features_dataframe = ss.createDataFrame(selected_features_rdd.map(row => Row.fromSeq(row.map(_._1))), schema = schema)
 
         if (classifier.isDefined) {
