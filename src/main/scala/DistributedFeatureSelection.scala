@@ -259,19 +259,19 @@ object DistributedFeatureSelection {
 
 
     var compMeasure = 0.0
+    var selected_features_aux = 0
     val step = if (vertical) 1 else 5
     for (a <- minVote to maxVote by step) {
       // We add votes below Threshold value
       val selected_features = selected_features_0_votes ++ votes.filter(_._2 < a).map(_._1)
       val selected_features_indexes = selected_features.map(value => if (value != "class") value.substring(4).toInt else br_attributes.value.size - 1).collect()
-
-      if (selected_features_indexes.length > 1) {
+      if (selected_features_indexes.length > 1 && selected_features_aux != selected_features_indexes.length ) {
+        println(s"Number of features to be dataframed: ${selected_features_indexes.length}")
+        selected_features_aux = selected_features_indexes.length
         val selected_features_rdd = rdd.map(row => row.zipWithIndex.filter { case (_, index) => selected_features_indexes.contains(index) })
         val retained_feat_percent = (selected_features_indexes.length.toDouble / br_attributes.value.size - 1) * 100
-
         val struct = true
         val schema = StructType(selected_features.sortBy(x => if (x != "class") x.substring(4).toInt else br_attributes.value.size).map(name => StructField(name, StringType, struct)).collect())
-        println(s"Number of features to be dataframed: ${selected_features_rdd.first.length}")
         val selected_features_dataframe = ss.createDataFrame(selected_features_rdd.map(row => Row.fromSeq(row.map(_._1))), schema = schema)
         if (classifier.isDefined) {
           val (pipeline_stages, columns_to_cast) = createPipeline(selected_features, br_attributes, sc)
