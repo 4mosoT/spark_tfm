@@ -33,7 +33,7 @@ object DistributedFeatureSelection {
       val numParts: ScallopOption[Int] = opt[Int]("partitions", validate = 0 < _, descr = "Num of partitions", required = true)
       val alpha: ScallopOption[Double] = opt[Double]("alpha", descr = "Aplha Value for threshold computation / Default 0.75", validate = { x => 0 <= x && x <= 1 }, default = Some(0.75))
       val fs_algorithms: ScallopOption[String] = opt[String](required = true, default = Some("CFS,IG,RF"), descr = "List of feature selection algorithm")
-      val complexity_measure: ScallopOption[String] = opt[String](required = true, default = Some("F1,F2"), descr = "List of complexity measures")
+      val complexity_measure: ScallopOption[String] = opt[String](name="comp_measure", required = true, default = Some("F1,F2"), descr = "List of complexity measures")
       verify()
     }
 
@@ -152,6 +152,7 @@ object DistributedFeatureSelection {
       train_rdd = partitioned.filter(x => x._1 == 1 || x._1 == 2).map(_._2)
       test_rdd = partitioned.filter(_._1 == 0).map(_._2)
     }
+    println(s"Number of features detected: ${train_rdd.first().length - 1}")
     (train_rdd, test_rdd)
   }
 
@@ -272,7 +273,6 @@ object DistributedFeatureSelection {
         val schema = StructType(selected_features.sortBy(x => if (x != "class") x.substring(4).toInt else br_attributes.value.size).map(name => StructField(name, StringType, struct)).collect())
         println(s"Number of features to be dataframed: ${selected_features_rdd.first.length}")
         val selected_features_dataframe = ss.createDataFrame(selected_features_rdd.map(row => Row.fromSeq(row.map(_._1))), schema = schema)
-
         if (classifier.isDefined) {
           val (pipeline_stages, columns_to_cast) = createPipeline(selected_features, br_attributes, sc)
           val casted_dataframe = castDFToDouble(selected_features_dataframe, columns_to_cast)
