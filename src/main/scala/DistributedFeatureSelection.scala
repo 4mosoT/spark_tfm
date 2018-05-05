@@ -34,6 +34,8 @@ object DistributedFeatureSelection {
       val alpha: ScallopOption[Double] = opt[Double]("alpha", descr = "Aplha Value for threshold computation / Default 0.75", validate = { x => 0 <= x && x <= 1 }, default = Some(0.75))
       val fs_algorithms: ScallopOption[String] = opt[String](required = true, default = Some("CFS,IG,RF"), descr = "List of feature selection algorithm")
       val complexity_measure: ScallopOption[String] = opt[String](name="comp_measure", required = true, default = Some("F1,F2"), descr = "List of complexity measures")
+      val trainKNN: ScallopOption[Boolean] = toggle("trainKNN", default = Some(true), descrYes = "Wether or not use KNN to evalute models", prefix="not")
+
       verify()
     }
 
@@ -119,7 +121,7 @@ object DistributedFeatureSelection {
         val train_dataframe = createDataFrameFromFeatures(train_rdd, features, br_attributes, ss)
         val test_dataframe = createDataFrameFromFeatures(test_rdd, features, br_attributes, ss)
         val evaluation_time = System.currentTimeMillis()
-        evaluateFeatures(train_dataframe, test_dataframe, br_attributes, features, sc)
+        evaluateFeatures(train_dataframe, test_dataframe, br_attributes, features, sc, opts.trainKNN.toOption.get)
         println(s"Evaluation time is ${System.currentTimeMillis() - evaluation_time}")
         println("\n\n")
 
@@ -266,7 +268,7 @@ object DistributedFeatureSelection {
       val selected_features = selected_features_0_votes ++ votes.filter(_._2 < a).map(_._1)
       val selected_features_indexes = selected_features.map(value => if (value != "class") value.substring(4).toInt else br_attributes.value.size - 1).collect()
       if (selected_features_indexes.length > 1 && selected_features_aux != selected_features_indexes.length ) {
-        println(s"Number of features to be dataframed: ${selected_features_indexes.length}")
+        println(s"Number of features to be dataframed: ${selected_features_indexes.length - 1}")
         selected_features_aux = selected_features_indexes.length
         val selected_features_rdd = rdd.map(row => row.zipWithIndex.filter { case (_, index) => selected_features_indexes.contains(index) })
         val retained_feat_percent = (selected_features_indexes.length.toDouble / br_attributes.value.size - 1) * 100
@@ -298,7 +300,7 @@ object DistributedFeatureSelection {
   def evaluateFeatures(train_dataframe: DataFrame, test_dataframe: DataFrame,
                        br_attributes: Broadcast[Map[Int, (Option[Set[String]], String)]],
                        features: RDD[String],
-                       sc: SparkContext): Unit = {
+                       sc: SparkContext, train_knn:Boolean): Unit = {
 
     /** ******************************************
       * Evaluate Models With Selected Features
@@ -332,9 +334,15 @@ object DistributedFeatureSelection {
       .foreach {
 
         case (name, classi) =>
-
-          val accuracy = evaluator.evaluate(classi.fit(transformed_train_dataset).transform(transformed_test_dataset))
-          println(s"Accuracy for $name is $accuracy")
+          if(name != "KNN") {
+            val accuracy = evaluator.evaluate(classi.fit(transformed_train_dataset).transform(transformed_test_dataset))
+            println(s"Accuracy for $name is $accuracy")
+          }else{
+            if(train_knn){
+              val accuracy = evaluator.evaluate(classi.fit(transformed_train_dataset).transform(transformed_test_dataset))
+              println(s"Accuracy for $name is $accuracy")
+            }
+          }
 
       }
 
