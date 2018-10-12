@@ -1,15 +1,17 @@
 import java.util
 
-import org.apache.spark.SparkContext
+import org.apache.spark.{SparkConf, SparkContext}
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.ml.classification._
 import org.apache.spark.ml.evaluation.MulticlassClassificationEvaluator
 import org.apache.spark.ml.feature.{MinMaxScaler, OneHotEncoder, StringIndexer, VectorAssembler}
 import org.apache.spark.ml.{Pipeline, PipelineStage}
+import org.apache.spark.mllib.classification.{SVMModel, SVMMultiClassOVAModel}
 import org.apache.spark.rdd.RDD
+import org.apache.spark.sql.SQLContext
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.types.{StringType, StructField, StructType}
-import org.apache.spark.sql.{DataFrame, Row, SparkSession}
+import org.apache.spark.sql.{DataFrame, Row}
 import org.rogach.scallop.{ScallopConf, ScallopOption}
 import weka.core.{Attribute, Instances}
 import weka.filters.Filter
@@ -40,9 +42,12 @@ object DistributedFeatureSelection {
     }
 
     val start_time = System.currentTimeMillis()
-    val ss = SparkSession.builder().appName("distributed_feature_selection").master("local[*]")
-      .getOrCreate()
-    val sc = ss.sparkContext
+//    val ss = SparkSession.builder().appName("distributed_feature_selection").master("local[*]")
+//      .getOrCreate()
+
+    val conf = new SparkConf().setAppName("distributed_feature_selection")
+    val sc = new SparkContext(conf)
+    val sqlc = new SQLContext(sc)
     sc.setLogLevel("ERROR")
 
     val unfiltered_rdd = parse_RDD(sc.textFile(opts.dataset()), ',', opts.class_index())
@@ -93,10 +98,10 @@ object DistributedFeatureSelection {
 
 
         val classifier = compmeasure match {
-          case "SVM" =>
-            Some(new OneVsRest().setClassifier(new LinearSVC()))
-          case "KNN" =>
-            Some(new KNNClassifier().setK(1))
+//          case "SVM" =>
+//            Some(new SVMModel())
+//          case "KNN" =>
+//            Some(new KNNClassifier().setK(1))
           case "DT" =>
             Some(new DecisionTreeClassifier())
           case "NB" =>
@@ -107,7 +112,7 @@ object DistributedFeatureSelection {
 
         /** Here we get the selected features **/
         val features = computeThreshold(train_rdd, votes, opts.alpha(), classifier, br_attributes, opts.partType(),
-          opts.numParts(), 5, transposed_rdd, globalCompyMeasure, ss)
+          opts.numParts(), 5, transposed_rdd, globalCompyMeasure, sqlc)
 
         println(s"Number of features is ${features.count() - 1}")
         println(s"Feature selection computation time is ${System.currentTimeMillis() - start_sub_time} (votes + threshold)")
@@ -118,8 +123,8 @@ object DistributedFeatureSelection {
         }
 
         /** Here we evaluate several algorithms with the selected features **/
-        val train_dataframe = createDataFrameFromFeatures(train_rdd, features, br_attributes, ss)
-        val test_dataframe = createDataFrameFromFeatures(test_rdd, features, br_attributes, ss)
+        val train_dataframe = createDataFrameFromFeatures(train_rdd, features, br_attributes, sqlc)
+        val test_dataframe = createDataFrameFromFeatures(test_rdd, features, br_attributes, sqlc)
         val evaluation_time = System.currentTimeMillis()
         evaluateFeatures(train_dataframe, test_dataframe, br_attributes, features, sc, opts.trainKNN.toOption.get)
         println(s"Evaluation time is ${System.currentTimeMillis() - evaluation_time}")
@@ -139,15 +144,15 @@ object DistributedFeatureSelection {
   def splitTrainTestRDD(br_attributes: Broadcast[Map[Int, (Option[Set[String]], String)]], original_rdd: RDD[Array[String]], test_file: Option[String], class_first_column: Boolean, sc: SparkContext): (RDD[Array[String]], RDD[Array[String]]) = {
 
 
-    var train_rdd = sc.emptyRDD[Array[String]]
-    var test_rdd = sc.emptyRDD[Array[String]]
+    var train_rdd:RDD[Array[String]] = sc.emptyRDD[Array[String]]
+    var test_rdd:RDD[Array[String]] = sc.emptyRDD[Array[String]]
 
     if (test_file.isDefined) {
       train_rdd = original_rdd
       test_rdd = parse_RDD(sc.textFile(test_file.get), ',', class_first_column)
     } else {
       val classes = br_attributes.value(br_attributes.value.size - 1)._1.get
-      var partitioned = sc.emptyRDD[(Long, Array[String])]
+      var partitioned:RDD[(Long, Array[String])] = sc.emptyRDD[(Long, Array[String])]
       classes.foreach(_class => {
         partitioned ++= original_rdd.filter(_.last == _class).zipWithIndex().map { case (row: Array[String], index: Long) => (index % 3, row) }
       })
@@ -190,12 +195,12 @@ object DistributedFeatureSelection {
       * **************************/
 
     val rounds = 5
-    var times = sc.emptyRDD[Long]
-    var cfs_selected = sc.emptyRDD[Int]
+    var times:RDD[Long] = sc.emptyRDD[Long]
+    var cfs_selected:RDD[Int] = sc.emptyRDD[Int]
 
 
     val votes = {
-      var sub_votes = sc.emptyRDD[(String, Int)]
+      var sub_votes:RDD[(String, Int)] = sc.emptyRDD[(String, Int)]
       if (vertical) {
         // Get the class column
         val br_class_column = sc.broadcast(transpose_input.filter {
@@ -239,9 +244,9 @@ object DistributedFeatureSelection {
                        br_attributes: Broadcast[Map[Int, (Option[Set[String]], String)]],
                        vertical: Boolean, numParts: Int, rounds: Int = 5, transpose_input: RDD[(Int, Seq[String])],
                        globalComplexityMeasure: (DataFrame, Broadcast[Map[Int, (Option[Set[String]], String)]], SparkContext, RDD[(Int, Seq[String])]) => Double,
-                       ss: SparkSession): RDD[String] = {
+                       sqlc: SQLContext): RDD[String] = {
 
-    val sc = ss.sparkContext
+    val sc = sqlc.sparkContext
     /** ******************************************
       * Computing 'Selection Features Threshold'
       * ******************************************/
@@ -274,7 +279,7 @@ object DistributedFeatureSelection {
         val retained_feat_percent = (selected_features_indexes.length.toDouble / br_attributes.value.size - 1) * 100
         val struct = true
         val schema = StructType(selected_features.sortBy(x => if (x != "class") x.substring(4).toInt else br_attributes.value.size).map(name => StructField(name, StringType, struct)).collect())
-        val selected_features_dataframe = ss.createDataFrame(selected_features_rdd.map(row => Row.fromSeq(row.map(_._1))), schema = schema)
+        val selected_features_dataframe = sqlc.createDataFrame(selected_features_rdd.map(row => Row.fromSeq(row.map(_._1))), schema = schema)
         if (classifier.isDefined) {
           val (pipeline_stages, columns_to_cast) = createPipeline(selected_features, br_attributes, sc)
           val casted_dataframe = castDFToDouble(selected_features_dataframe, columns_to_cast)
@@ -311,7 +316,7 @@ object DistributedFeatureSelection {
     val casted_train_dataframe = castDFToDouble(train_dataframe, columns_to_cast)
     val casted_test_dataframe = castDFToDouble(test_dataframe, columns_to_cast)
 
-    val fittedpipeline = new Pipeline().setStages(pipeline_stages).fit(casted_train_dataframe.union(casted_test_dataframe))
+    val fittedpipeline = new Pipeline().setStages(pipeline_stages).fit(casted_train_dataframe.unionAll(casted_test_dataframe))
 
     val transformed_train_dataset = fittedpipeline.transform(casted_train_dataframe)
     transformed_train_dataset.cache()
@@ -325,10 +330,10 @@ object DistributedFeatureSelection {
 
 
     Seq(
-      ("SMV", new OneVsRest().setClassifier(new LinearSVC())),
+      //("SMV", new OneVsRest().setClassifier(new LinearSVC())),
       ("Decision Tree", new DecisionTreeClassifier()),
-      ("Naive Bayes", new NaiveBayes()),
-      ("KNN", new KNNClassifier().setTopTreeSize(transformed_train_dataset.count().toInt / 500 + 1).setK(1))
+      ("Naive Bayes", new NaiveBayes())
+      //("KNN", new KNNClassifier().setTopTreeSize(transformed_train_dataset.count().toInt / 500 + 1).setK(1))
 
     )
       .foreach {
@@ -359,7 +364,7 @@ object DistributedFeatureSelection {
                                              class_schema_index: Int, ranking_features: Int): RDD[(String, (Int, Long, Int))] = {
 
     val classes = br_attributes.value(br_attributes.value.size - 1)._1.get
-    var mergedRDD = sc.emptyRDD[(Int, Array[String])]
+    var mergedRDD:RDD[(Int, Array[String])] = sc.emptyRDD[(Int, Array[String])]
     classes.foreach(_class => {
       val auxRDD = input.filter(_.last == _class)
       val tozip = scala.util.Random.shuffle(0 to auxRDD.count().toInt)
@@ -395,7 +400,7 @@ object DistributedFeatureSelection {
 
     var overlapping: RDD[(Int, Seq[String])] = sc.emptyRDD[(Int, Seq[String])]
     if (overlap > 0) {
-      overlapping = transposed.sample(withReplacement = false, overlap)
+      overlapping = transposed.sample(withReplacement = false, fraction = overlap)
     }
     val br_overlapping = overlapping.collect().toIterable
 
@@ -434,13 +439,13 @@ object DistributedFeatureSelection {
     } else x.split(sep)
   })
 
-  def createDataFrameFromFeatures(rdd: RDD[Array[String]], selected_features: RDD[String], br_attributes: Broadcast[Map[Int, (Option[Set[String]], String)]], ss: SparkSession): DataFrame = {
+  def createDataFrameFromFeatures(rdd: RDD[Array[String]], selected_features: RDD[String], br_attributes: Broadcast[Map[Int, (Option[Set[String]], String)]], sqlc: SQLContext): DataFrame = {
     val features = selected_features.collect()
     val selected_features_indexes = features.map(value => if (value != "class") value.substring(4).toInt else br_attributes.value.size - 1)
     val selected_features_rdd = rdd.map(row => row.zipWithIndex.filter { case (_, index) => selected_features_indexes.contains(index) })
     val struct = true
     val schema = StructType(features.sortBy(x => if (x != "class") x.substring(4).toInt else br_attributes.value.size).map(name => StructField(name, StringType, struct)))
-    ss.createDataFrame(selected_features_rdd.map(row => Row.fromSeq(row.map(_._1))), schema = schema)
+    sqlc.createDataFrame(selected_features_rdd.map(row => Row.fromSeq(row.map(_._1))), schema = schema)
 
   }
 
