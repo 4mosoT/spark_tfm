@@ -575,41 +575,39 @@ object DistributedFeatureSelection {
       val proportions: Map[String, Double] = samples_per_class.withColumn("count", col("count") / dataframe.count())
         .collect().map(row => (row(0).toString, row(1).toString.toDouble)).toMap
 
-      val meanData = data.groupBy("class").mean()
+      val meanData = data.groupBy("class").mean().collect().map((row:Row) => (row(0), row.toSeq.drop(1))).toMap
       val expr = data.columns.map(_ -> "var_samp").toMap
-      val varData  = data.groupBy("class").agg(expr)
+      val varData  = data.groupBy("class").agg(expr).collect().map((row:Row) => (row(0), row.toSeq.drop(1))).toMap
 
-      varData.show(5)
 
       var f_feats: List[Double] = List()
 
-      data.columns.drop(1).foreach(column_name => {
-
-        var sumMean: Double = 0
-        var sumVar: Double = 0
-
-        var new_classes = classes
-
-        val column = meanData.select("class", s"avg($column_name)")
-
-
-        classes.foreach(class_name => {
-
-          val meanC = meanData.filter(data("class").equalTo(class_name))
-          new_classes = new_classes.drop(1)
-
-          new_classes.foreach(class2_name => {
-            val meanK = meanData.filter(data("class").equalTo(class_name))
+//      data.columns.drop(1).foreach(column_name => {
+//
+//        var sumMean: Double = 0
+//        var sumVar: Double = 0
+//
+//        var new_classes = classes
+//
+//        val column = meanData.select("class", s"avg($column_name)")
+//
+//        classes.foreach(class_name => {
+//
+//          val meanC = column.filter(data("class").equalTo(class_name)).first()(1).toString.toDouble
+//          new_classes = new_classes.drop(1)
+//
+//          new_classes.foreach(class2_name => {
+//            val meanK = column.filter(data("class").equalTo(class2_name)).first()(1).toString.toDouble
 //            sumMean += scala.math.pow(meanC + meanK, 2) * proportions(class2_name) * proportions(class_name)
-          })
-
-//          sumVar += data.filter(data("class").equalTo(class_name)).select(variance(column_name))
-        })
-
-        f_feats = f_feats :+ (sumMean / sumVar)
-      })
-
-      result = 1 / f_feats.max
+//          })
+//
+//          sumVar += varData.select("class", s"var_samp($column_name)").first()(1).toString.toDouble * proportions(class_name)
+//        })
+//
+//        f_feats = f_feats :+ (sumMean / sumVar)
+//      })
+//
+//      result = 1 / f_feats.max
     }
 
     result
