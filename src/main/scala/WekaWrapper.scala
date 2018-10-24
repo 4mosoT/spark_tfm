@@ -95,8 +95,12 @@ object WekaWrapper {
     val instance = new DenseInstance(attributes_schema.size())
 
     row.zipWithIndex.foreach({ case (value, index) =>
-      if (attributes(index)._1.isDefined) {
-          instance.setValue(attributes_schema.get(index), value.asInstanceOf[String])
+
+      val attribute_real_index = if (attributes_schema.get(index).name() != "class")
+                                    attributes_schema.get(index).name().split("_")(1).toInt
+                                else attributes_schema.size() - 1
+      if (attributes(attribute_real_index)._1.isDefined) {
+        instance.setValue(attributes_schema.get(index), value.asInstanceOf[String])
       } else {
         instance.setValue(attributes_schema.get(index), value.toString.toDouble)
       }
