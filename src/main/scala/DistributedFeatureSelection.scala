@@ -252,9 +252,9 @@ object DistributedFeatureSelection {
 
     //We get the features that aren't in the votes set. That means features -> Votes = 0
     // ****Class column included****
-//    val selected_features_0_votes = sc.parallelize(br_attributes.value.map(_._2._2).filter(!votes.map(_._1).collect().contains(_)).toSeq)
+    //    val selected_features_0_votes = sc.parallelize(br_attributes.value.map(_._2._2).filter(!votes.map(_._1).collect().contains(_)).toSeq)
     val aux = sc.parallelize(br_attributes.value.values.map(x => (x._2, 0)).toList).union(votes)
-    val selected_features_0_votes =  aux.reduceByKey(_ + _).filter(_._2 == 0).map(_._1)
+    val selected_features_0_votes = aux.reduceByKey(_ + _).filter(_._2 == 0).map(_._1)
 
     val alpha = alpha_value
     var e_v = collection.mutable.ArrayBuffer[(Int, Double)]()
@@ -561,7 +561,7 @@ object DistributedFeatureSelection {
 
     if (data.columns.length > 2) {
       //We need one hot encode the categorical features
-      val categorical_features = data.columns.dropRight(1).filter(x => br_attributes.value.values.map(_._2).toList.contains(x))
+      val categorical_features = data.columns.dropRight(1).filter(x => br_attributes.value.values.filter(_._1.isDefined).map(_._2).toList.contains(x))
       categorical_features.foreach(name => {
         data.select(name).distinct().collect().foreach(row => {
           val option = row(0)
@@ -576,17 +576,14 @@ object DistributedFeatureSelection {
       val proportions: Map[String, Double] = samples_per_class.withColumn("count", col("count") / dataframe.count())
         .collect().map(row => (row(0).toString, row(1).toString.toDouble)).toMap
 
-      val meanData = data.groupBy("class").mean().collect().map((row: Row) => (row(0), row.toSeq.drop(1))).toMap
-      val expr = data.columns.map(_ -> "var_samp").toMap
-      val varData = data.groupBy("class").agg(expr).collect().map((row: Row) => (row(0), row.toSeq.drop(1))).toMap
+      val exp_mean = data.columns.filter(_!="class").map(_ -> "mean").toMap
+      val meanData = data.groupBy("class").agg(exp_mean).collect().map((row: Row) => (row(0), row.toSeq.drop(1))).toMap
+      val expr_var = data.columns.filter(_!="class").map(_ -> "var_samp").toMap
+      val varData = data.groupBy("class").agg(expr_var).collect().map((row: Row) => (row(0), row.toSeq.drop(1))).toMap
 
       val br_meanData = sc.broadcast(meanData)
       val br_varData = sc.broadcast(varData)
       val br_proportions = sc.broadcast(proportions)
-
-      data.show(2)
-      data.columns.filter(_ != "class").foreach(x => print( s"$x-"))
-
 
       val f_feats = sc.parallelize(data.columns.filter(_ != "class").zipWithIndex).map(tuple => {
 
