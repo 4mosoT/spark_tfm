@@ -576,9 +576,9 @@ object DistributedFeatureSelection {
       val proportions: Map[String, Double] = samples_per_class.withColumn("count", col("count") / dataframe.count())
         .collect().map(row => (row(0).toString, row(1).toString.toDouble)).toMap
 
-      val exp_mean = data.columns.filter(_!="class").map(_ -> "mean").toMap
+      val exp_mean = data.columns.filter(_ != "class").map(_ -> "mean").toMap
       val meanData = data.groupBy("class").agg(exp_mean).collect().map((row: Row) => (row(0), row.toSeq.drop(1))).toMap
-      val expr_var = data.columns.filter(_!="class").map(_ -> "var_samp").toMap
+      val expr_var = data.columns.filter(_ != "class").map(_ -> "var_samp").toMap
       val varData = data.groupBy("class").agg(expr_var).collect().map((row: Row) => (row(0), row.toSeq.drop(1))).toMap
 
       val br_meanData = sc.broadcast(meanData)
@@ -619,88 +619,66 @@ object DistributedFeatureSelection {
 
   }
 
-
   def f2(dataframe: DataFrame, br_attributes: Broadcast[Map[Int, (Option[Set[String]], String)]], sc: SparkContext, transposedRDD: RDD[(Int, Seq[String])]): Double = {
-    val class_index = br_attributes.value.size - 1
-    val class_name = "class"
-    val class_column = sc.broadcast(dataframe.select(class_name).rdd.map(_ (0)).collect())
-    val br_columns = sc.broadcast(dataframe.columns)
-    val rdd = if (!transposedRDD.isEmpty) transposedRDD.filter { case (x, _) => br_columns.value.contains(br_attributes.value(x)._2) }
-    else {
-      val index_columns = dataframe.columns.dropRight(1).map(_.substring(4).toInt)
-      transposeRDDRow(dataframe.drop(class_name).rdd).map { case (index, row) => (index_columns(index), row) }
-    }
-    val f2 = rdd.map {
-
-      case (column_index, row) =>
-        var result = 0.0
-        val zipped_row = row.zip(class_column.value)
-
-        //Auxiliar Arrays
-        val computed_classes = collection.mutable.ArrayBuffer.empty[String]
-
-        if (br_attributes.value(column_index)._1.isDefined) {
-          //If we have categorical values we need to discretize them.
-          // We use zipWithIndex where its index is its discretize value.
-          val values = br_attributes.value(column_index)._1.get.zipWithIndex.map { case (value, sub_index) => value -> (sub_index + 1) }.toMap
-
-          var minmaxi = 0
-          var maxmini = 0
-          var maxmaxi = 0
-          var minmini = 0
-
-          br_attributes.value(class_index)._1.get.foreach { _class_ =>
-
-            val datasetC = zipped_row.filter(_._2 == _class_).map(x => values(x._1.toString))
-            computed_classes += _class_.toString
-
-            br_attributes.value(class_index)._1.get.foreach { sub_class_ =>
-              if (!computed_classes.contains(sub_class_)) {
-                val datasetK = zipped_row.filter(_._2 == sub_class_).map(x => values(x._1.toString))
-
-                minmaxi = Seq(datasetC.max, datasetK.max).min
-                maxmini = Seq(datasetC.min, datasetK.min).max
-                maxmaxi = Seq(datasetC.max, datasetK.max).max
-                minmini = Seq(datasetC.min, datasetK.min).min
-
-              }
 
 
-            }
-            val div = if (maxmaxi - minmini == 0) 0.01 else maxmaxi - minmini
-            result += Seq(0, minmaxi - maxmini).max / div
+    var data: DataFrame = dataframe
+    var result = 0.0
+    val classes = br_attributes.value(br_attributes.value.size - 1)._1.get
+    //We need one hot encode the categorical features
+    val categorical_features = data.columns.dropRight(1).filter(x => br_attributes.value.values.filter(_._1.isDefined).map(_._2).toList.contains(x))
+    categorical_features.foreach(name => {
+      data.select(name).distinct().collect().foreach(row => {
+        val option = row(0)
+        val function = udf((item: String) => if (item == option) 1 else 0)
+        data = data.withColumn(s"${name}_${option}", function(col(name)))
+      })
+      data = data.drop(name)
+    })
 
-          }
-        } else {
-          br_attributes.value(class_index)._1.get.foreach { _class_ =>
-            val datasetC = zipped_row.filter(_._2 == _class_).map(_._1.toString.toDouble)
-            computed_classes += _class_.toString
+    val expr_min = data.columns.filter(_ != "class").map(_ -> "min").toMap
+    val minData = data.groupBy("class").agg(expr_min).collect().map((row: Row) => (row(0), row.toSeq.drop(1))).toMap
+    val expr_max = data.columns.filter(_ != "class").map(_ -> "max").toMap
+    val maxData = data.groupBy("class").agg(expr_max).collect().map((row: Row) => (row(0), row.toSeq.drop(1))).toMap
 
-            var minmaxi = 0.0
-            var maxmini = 0.0
-            var maxmaxi = 0.0
-            var minmini = 0.0
+    val br_maxData = sc.broadcast(maxData)
+    val br_minData = sc.broadcast(minData)
 
-            br_attributes.value(class_index)._1.get.foreach { sub_class_ =>
-              if (!computed_classes.contains(sub_class_)) {
-                val datasetK = zipped_row.filter(_._2 == sub_class_).map(_._1.toString.toDouble)
-                minmaxi = Seq(datasetC.max, datasetK.max).min
-                maxmini = Seq(datasetC.min, datasetK.min).max
-                maxmaxi = Seq(datasetC.max, datasetK.max).max
-                minmini = Seq(datasetC.min, datasetK.min).min
-              }
+    val f_feats = sc.parallelize(data.columns.filter(_ != "class").zipWithIndex).map(tuple => {
 
-            }
-            val div = if (maxmaxi - minmini == 0) 0.01 else maxmaxi - minmini
-            result += Seq(0, minmaxi - maxmini).max / div
-          }
-        }
-        result
-    }.sum()
-    class_column.destroy()
-    br_columns.destroy()
-    f2
+      var new_classes = classes
+
+      var inter_result = 0.0
+
+      classes.foreach(class_name => {
+
+        new_classes = new_classes.drop(1)
+
+        new_classes.foreach(class2_name => {
+
+          val minmaxi = scala.math.min(br_maxData.value(class_name)(tuple._2).toString.toDouble, br_maxData.value(class2_name)(tuple._2).toString.toDouble)
+          val maxmini = scala.math.max(br_minData.value(class_name)(tuple._2).toString.toDouble, br_minData.value(class2_name)(tuple._2).toString.toDouble)
+          val maxmaxi = scala.math.max(br_maxData.value(class_name)(tuple._2).toString.toDouble, br_maxData.value(class2_name)(tuple._2).toString.toDouble)
+          val minmini = scala.math.min(br_minData.value(class_name)(tuple._2).toString.toDouble, br_minData.value(class2_name)(tuple._2).toString.toDouble)
+          inter_result += scala.math.max(0, (minmaxi-maxmini)/(maxmaxi-minmini + 0.001))
+
+        })
+
+      })
+
+      inter_result
+
+    })
+
+    br_maxData.unpersist()
+    br_minData.unpersist()
+
+    f_feats.sum()
+
+
 
   }
+
+
 
 }
