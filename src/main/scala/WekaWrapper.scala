@@ -91,22 +91,21 @@ object WekaWrapper {
   }
 
   def addRowToInstances(data: Instances, attributes: Map[Int, (Option[Set[String]], String)], attributes_schema: util.ArrayList[Attribute], row: Array[String]): Instances = {
-
     val instance = new DenseInstance(attributes_schema.size())
 
     row.zipWithIndex.foreach({ case (value, index) =>
 
       val attribute_real_index = if (attributes_schema.get(index).name() != "class")
                                     attributes_schema.get(index).name().split("_")(1).toInt
-                                else attributes_schema.size() - 1
+                                else attributes.size - 1
+
       if (attributes(attribute_real_index)._1.isDefined) {
-        instance.setValue(attributes_schema.get(index), value.asInstanceOf[String])
+         instance.setValue(attributes_schema.get(index), value.toString)
       } else {
-        instance.setValue(attributes_schema.get(index), value.toString.toDouble)
+        instance.setValue(attributes_schema.get(index), value.toDouble)
       }
     })
     data.add(instance)
-
     data
 
   }

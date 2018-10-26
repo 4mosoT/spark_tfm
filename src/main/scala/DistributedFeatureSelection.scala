@@ -409,6 +409,7 @@ object DistributedFeatureSelection {
     mergedRDD
       .combineByKey(
         (tuple: (Int, Array[String])) => {
+
           val data = new Instances("Rel", br_per_partition_schemas.value(tuple._1), 0)
           data.setClassIndex(br_per_partition_schemas.value(tuple._1).size - 1)
           WekaWrapper.addRowToInstances(data, br_attributes.value, br_per_partition_schemas.value(tuple._1), tuple._2)
@@ -425,7 +426,6 @@ object DistributedFeatureSelection {
           (br_attributes.value.values.map(_._2).toSet.diff(selected_attributes) - br_attributes.value(br_attributes.value.size - 1)._2).map((_, (1, time, filtered_data.numAttributes())))
 
       }.reduceByKey((t1, t2) => (t1._1 + t2._1, math.max(t1._2, t2._2), math.max(t1._3, t2._3)))
-    //sc.emptyRDD[(String, (Int, Long, Int))]
 
   }
 
