@@ -77,8 +77,9 @@ object DistributedFeatureSelection {
 
       /** Here we get the votes vector **/
       //val (votes, times, cfs_selected) = getVotesVector(train_rdd, br_attributes, opts.numParts(), opts.partType(), opts.overlap(), "CFS", cfs_features_selected, transposed_rdd, sc)
+      val start_votes_time = System.currentTimeMillis()
       val (votes, times, cfs_selected) = getVotesVector(train_rdd, br_attributes, opts.numParts(), opts.partType(), opts.overlap(), "CFS", cfs_features_selected, sc)
-      println(s"\nTime $fsa computation stats:${times.stats()}")
+      println(s"\nTime $fsa computation stats:${times.stats()}. Computation time ${System.currentTimeMillis() - start_votes_time}")
 
       if (fsa == "CFS") cfs_features_selected = (cfs_selected.sum() / cfs_selected.count()).toInt
 
@@ -274,6 +275,7 @@ object DistributedFeatureSelection {
         val struct = true
         val schema = StructType(selected_features.sortBy(x => if (x != "class") x.substring(4).toInt else br_attributes.value.size).map(name => StructField(name, StringType, struct)).collect())
         val selected_features_dataframe = ss.createDataFrame(selected_features_rdd.map(row => Row.fromSeq(row.map(_._1))), schema = schema)
+        val start_meassure_time = System.currentTimeMillis()
         if (classifier.isDefined) {
           val (pipeline_stages, columns_to_cast) = createPipeline(selected_features, br_attributes, sc)
           val casted_dataframe = castDFToDouble(selected_features_dataframe, columns_to_cast)
@@ -284,6 +286,7 @@ object DistributedFeatureSelection {
         } else {
           compMeasure = globalComplexityMeasure(selected_features_dataframe, br_attributes, sc, transpose_input)
         }
+        println(s"Time to compute complexity measure ${System.currentTimeMillis() - start_meassure_time}")
 
         e_v += ((a, alpha * compMeasure + (1 - alpha) * retained_feat_percent))
 
@@ -581,11 +584,7 @@ object DistributedFeatureSelection {
       val expr_var = data.columns.filter(_ != "class").map(_ -> "var_samp").toMap
       val varData = data.groupBy("class").agg(expr_var).collect().map((row: Row) => (row(0), row.toSeq.drop(1))).toMap
 
-      val br_meanData = sc.broadcast(meanData)
-      val br_varData = sc.broadcast(varData)
-      val br_proportions = sc.broadcast(proportions)
-
-      val f_feats = sc.parallelize(data.columns.filter(_ != "class").zipWithIndex).map(tuple => {
+      val f_feats = data.columns.filter(_ != "class").zipWithIndex.map(tuple => {
 
         var sumMean: Double = 0
         var sumVar: Double = 0
@@ -594,23 +593,20 @@ object DistributedFeatureSelection {
 
         classes.foreach(class_name => {
 
-          val meanC = br_meanData.value(class_name)(tuple._2).toString.toDouble
+          val meanC = meanData(class_name)(tuple._2).toString.toDouble
           new_classes = new_classes.drop(1)
 
           new_classes.foreach(class2_name => {
-            val meanK = br_meanData.value(class2_name)(tuple._2).toString.toDouble
+            val meanK = meanData(class2_name)(tuple._2).toString.toDouble
             sumMean += scala.math.pow(meanC + meanK, 2) * proportions(class2_name) * proportions(class_name)
           })
-          val data_null = if (br_varData.value(class_name)(tuple._2) == null) 1.0 else br_varData.value(class_name)(tuple._2).toString.toDouble
+          val data_null = if (varData(class_name)(tuple._2) == null) 1.0 else varData(class_name)(tuple._2).toString.toDouble
           sumVar += data_null
         })
 
         sumMean / sumVar
       })
 
-      br_meanData.unpersist()
-      br_proportions.unpersist()
-      br_meanData.unpersist()
       result = 1 / f_feats.max
 
     }
@@ -631,7 +627,7 @@ object DistributedFeatureSelection {
       data.select(name).distinct().collect().foreach(row => {
         val option = row(0)
         val function = udf((item: String) => if (item == option) 1 else 0)
-        data = data.withColumn(s"${name}_${option}", function(col(name)))
+        data = data.withColumn(s"${name}_$option", function(col(name)))
       })
       data = data.drop(name)
     })
@@ -641,10 +637,7 @@ object DistributedFeatureSelection {
     val expr_max = data.columns.filter(_ != "class").map(_ -> "max").toMap
     val maxData = data.groupBy("class").agg(expr_max).collect().map((row: Row) => (row(0), row.toSeq.drop(1))).toMap
 
-    val br_maxData = sc.broadcast(maxData)
-    val br_minData = sc.broadcast(minData)
-
-    val f_feats = sc.parallelize(data.columns.filter(_ != "class").zipWithIndex).map(tuple => {
+    val f_feats = data.columns.filter(_ != "class").zipWithIndex.map(tuple => {
 
       var new_classes = classes
 
@@ -656,11 +649,11 @@ object DistributedFeatureSelection {
 
         new_classes.foreach(class2_name => {
 
-          val minmaxi = scala.math.min(br_maxData.value(class_name)(tuple._2).toString.toDouble, br_maxData.value(class2_name)(tuple._2).toString.toDouble)
-          val maxmini = scala.math.max(br_minData.value(class_name)(tuple._2).toString.toDouble, br_minData.value(class2_name)(tuple._2).toString.toDouble)
-          val maxmaxi = scala.math.max(br_maxData.value(class_name)(tuple._2).toString.toDouble, br_maxData.value(class2_name)(tuple._2).toString.toDouble)
-          val minmini = scala.math.min(br_minData.value(class_name)(tuple._2).toString.toDouble, br_minData.value(class2_name)(tuple._2).toString.toDouble)
-          inter_result += scala.math.max(0, (minmaxi-maxmini)/(maxmaxi-minmini + 0.001))
+          val minmaxi = scala.math.min(maxData(class_name)(tuple._2).toString.toDouble, maxData(class2_name)(tuple._2).toString.toDouble)
+          val maxmini = scala.math.max(minData(class_name)(tuple._2).toString.toDouble, minData(class2_name)(tuple._2).toString.toDouble)
+          val maxmaxi = scala.math.max(maxData(class_name)(tuple._2).toString.toDouble, maxData(class2_name)(tuple._2).toString.toDouble)
+          val minmini = scala.math.min(minData(class_name)(tuple._2).toString.toDouble, minData(class2_name)(tuple._2).toString.toDouble)
+          inter_result += scala.math.max(0, (minmaxi - maxmini) / (maxmaxi - minmini + 0.001))
 
         })
 
@@ -670,15 +663,10 @@ object DistributedFeatureSelection {
 
     })
 
-    br_maxData.unpersist()
-    br_minData.unpersist()
-
-    f_feats.sum()
-
+    f_feats.sum
 
 
   }
-
 
 
 }
