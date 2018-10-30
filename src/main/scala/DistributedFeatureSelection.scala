@@ -90,10 +90,16 @@ object DistributedFeatureSelection {
         println(s"*****Using $fsa algorithm with $compmeasure as complexity measure*****")
 
 
+        //        val globalCompyMeasure = compmeasure match {
+        //          case "F1" => fisherRatio _
+        //          case "F2" => f2 _
+        //          case _ => zeroGlobal _
+        //        }
+
         val globalCompyMeasure = compmeasure match {
-          case "F1" => fisherRatio _
-          case "F2" => f2 _
-          case _ => zeroGlobal _
+          case "F1" => fisherRatio
+          case "F2" => f2
+          case _ => zeroGlobal
         }
 
 
@@ -237,7 +243,7 @@ object DistributedFeatureSelection {
   def computeThreshold(rdd: RDD[Array[String]], votes: RDD[(String, Int)], alpha_value: Double, classifier: Option[PipelineStage],
                        br_attributes: Broadcast[Map[Int, (Option[Set[String]], String)]],
                        vertical: Boolean, numParts: Int, rounds: Int = 5, transpose_input: RDD[(Int, Seq[String])],
-                       globalComplexityMeasure: (DataFrame, Broadcast[Map[Int, (Option[Set[String]], String)]], SparkContext, RDD[(Int, Seq[String])]) => Double,
+                       globalComplexityMeasure: DistributedFeatureSelection.complexityMeasure,
                        ss: SparkSession): RDD[String] = {
 
     val sc = ss.sparkContext
@@ -264,9 +270,11 @@ object DistributedFeatureSelection {
     var selected_features_aux = 0
     val step = if (vertical) 1 else 5
     for (a <- minVote to maxVote by step) {
+
       // We add votes below Threshold value
       val selected_features = selected_features_0_votes ++ votes.filter(_._2 < a).map(_._1)
       val selected_features_indexes = selected_features.map(value => if (value != "class") value.substring(4).toInt else br_attributes.value.size - 1).collect()
+
       if (selected_features_indexes.length > 1 && selected_features_aux != selected_features_indexes.length) {
         println(s"Number of features to be dataframed: ${selected_features_indexes.length - 1}")
         selected_features_aux = selected_features_indexes.length
@@ -275,6 +283,7 @@ object DistributedFeatureSelection {
         val struct = true
         val schema = StructType(selected_features.sortBy(x => if (x != "class") x.substring(4).toInt else br_attributes.value.size).map(name => StructField(name, StringType, struct)).collect())
         val selected_features_dataframe = ss.createDataFrame(selected_features_rdd.map(row => Row.fromSeq(row.map(_._1))), schema = schema)
+
         val start_meassure_time = System.currentTimeMillis()
         if (classifier.isDefined) {
           val (pipeline_stages, columns_to_cast) = createPipeline(selected_features, br_attributes, sc)
@@ -284,7 +293,7 @@ object DistributedFeatureSelection {
             .setPredictionCol("prediction").setMetricName("accuracy")
           compMeasure = 1 - evaluator.evaluate(pipeline.transform(casted_dataframe))
         } else {
-          compMeasure = globalComplexityMeasure(selected_features_dataframe, br_attributes, sc, transpose_input)
+          compMeasure = globalComplexityMeasure.compute(selected_features_dataframe, br_attributes, sc)
         }
         println(s"Time to compute complexity measure ${System.currentTimeMillis() - start_meassure_time}")
 
@@ -552,119 +561,152 @@ object DistributedFeatureSelection {
   /** ********************
     * Complexity measures
     * *********************/
+  class complexityMeasure {
 
-
-  def zeroGlobal(dataframe: DataFrame, br_attributes: Broadcast[Map[Int, (Option[Set[String]], String)]], sc: SparkContext, transposedRDD: RDD[(Int, Seq[String])]): Double = {
-    0.0
+    def compute(dataframe: DataFrame, br_attributes: Broadcast[Map[Int, (Option[Set[String]], String)]], sc: SparkContext): Double = {
+      0.0
+    }
   }
 
-  def fisherRatio(dataframe: DataFrame, br_attributes: Broadcast[Map[Int, (Option[Set[String]], String)]], sc: SparkContext, transposedRDD: RDD[(Int, Seq[String])]): Double = {
-    var data: DataFrame = dataframe
-    var result: Double = 9999999
+  object zeroGlobal extends complexityMeasure {
 
-    if (data.columns.length > 2) {
+  }
+
+  object fisherRatio extends complexityMeasure {
+
+    var count: Int = 0
+    var meanData: Map[String, Seq[(String, Double)]] = Map()
+    var varData: Map[String, Seq[(String, Double)]] = Map()
+    var proportions: Map[String, Double] = Map()
+
+    override def compute(dataframe: DataFrame, br_attributes: Broadcast[Map[Int, (Option[Set[String]], String)]], sc: SparkContext): Double = {
+      var data: DataFrame = dataframe
+      var result: Double = 9999999
+
+      if (data.columns.length > 2) {
+        //We need one hot encode the categorical features
+        val categorical_features = data.columns.dropRight(1).filter(x => br_attributes.value.values.filter(_._1.isDefined).map(_._2).toList.contains(x))
+        categorical_features.foreach(name => {
+          data.select(name).distinct().collect().foreach(row => {
+            val option = row(0)
+            val function = udf((item: String) => if (item == option) 1 else 0)
+            data = data.withColumn(s"${name}_$option", function(col(name)))
+          })
+          data = data.drop(name)
+        })
+
+        val classes = br_attributes.value(br_attributes.value.size - 1)._1.get
+
+        if (this.proportions.isEmpty) {
+          val samples_per_class = data.groupBy("class").count()
+          val count = data.count()
+          this.proportions = samples_per_class.rdd.map(row => (row(0).toString, row(1).toString.toDouble / count)).collect().toMap
+        }
+
+        val filtered_columns = data.columns.filter(x => x != "class" && !this.meanData.keySet.contains(x))
+        val exp_mean = filtered_columns.map(_ -> "mean").toMap
+        val rawMeanData = data.groupBy("class").agg(exp_mean).rdd.flatMap((row: Row) => {
+          val row_class = row(0)
+          filtered_columns.zip(row.toSeq.drop(1)).map(tuple => (tuple._1, (row_class, tuple._2)))
+        }).groupByKey().map(tuple => (tuple._1, tuple._2.toSeq.map(tuple => (tuple._1.toString, tuple._2.toString.toDouble)))).collectAsMap()
+        println("MeanData: ", rawMeanData)
+        this.meanData ++= rawMeanData
+
+
+        val expr_var = filtered_columns.map(_ -> "var_samp").toMap
+        val rawVarData = data.groupBy("class").agg(expr_var).rdd.flatMap((row: Row) => {
+          val row_class = row(0)
+          filtered_columns.zip(row.toSeq.drop(1)).map(tuple => (tuple._1, (row_class, tuple._2)))
+        }).groupByKey().map(tuple => (tuple._1, tuple._2.toSeq.map(tuple => (tuple._1.toString, tuple._2.toString.toDouble)))).collectAsMap()
+        this.varData ++= rawVarData
+
+        val f_feats = data.columns.filter(_ != "class").map(column_name => {
+
+          var sumMean: Double = 0
+          var sumVar: Double = 0
+
+          var new_classes = classes
+
+          classes.foreach(class_name => {
+
+            val meanC = this.meanData(column_name).filter(_._1 == class_name).head._2
+            new_classes = new_classes.drop(1)
+
+            new_classes.foreach(class2_name => {
+              val meanK = this.meanData(column_name).filter(_._1 == class_name).head._2
+              sumMean += scala.math.pow(meanC + meanK, 2) * this.proportions(class2_name) * this.proportions(class_name)
+            })
+            val data_null = this.varData(column_name).filter(_._1 == class_name).head._2
+            sumVar += data_null
+          })
+
+          sumMean / sumVar
+        })
+
+        result = 1 / f_feats.max
+
+      }
+
+      result
+
+    }
+
+
+  }
+
+  object f2 extends complexityMeasure {
+
+    override def compute(dataframe: DataFrame, br_attributes: Broadcast[Map[Int, (Option[Set[String]], String)]], sc: SparkContext): Double = {
+
+      var data: DataFrame = dataframe
+      var result = 0.0
+      val classes = br_attributes.value(br_attributes.value.size - 1)._1.get
       //We need one hot encode the categorical features
       val categorical_features = data.columns.dropRight(1).filter(x => br_attributes.value.values.filter(_._1.isDefined).map(_._2).toList.contains(x))
       categorical_features.foreach(name => {
         data.select(name).distinct().collect().foreach(row => {
           val option = row(0)
           val function = udf((item: String) => if (item == option) 1 else 0)
-          data = data.withColumn(s"${name}_${option}", function(col(name)))
+          data = data.withColumn(s"${name}_$option", function(col(name)))
         })
         data = data.drop(name)
       })
 
-      val classes = br_attributes.value(br_attributes.value.size - 1)._1.get
-      val samples_per_class = data.groupBy("class").count()
-      val proportions: Map[String, Double] = samples_per_class.withColumn("count", col("count") / dataframe.count())
-        .collect().map(row => (row(0).toString, row(1).toString.toDouble)).toMap
-
-      val exp_mean = data.columns.filter(_ != "class").map(_ -> "mean").toMap
-      val meanData = data.groupBy("class").agg(exp_mean).collect().map((row: Row) => (row(0), row.toSeq.drop(1))).toMap
-      val expr_var = data.columns.filter(_ != "class").map(_ -> "var_samp").toMap
-      val varData = data.groupBy("class").agg(expr_var).collect().map((row: Row) => (row(0), row.toSeq.drop(1))).toMap
+      val expr_min = data.columns.filter(_ != "class").map(_ -> "min").toMap
+      val minData = data.groupBy("class").agg(expr_min).rdd.map((row: Row) => (row(0), row.toSeq.drop(1))).collectAsMap()
+      val expr_max = data.columns.filter(_ != "class").map(_ -> "max").toMap
+      val maxData = data.groupBy("class").agg(expr_max).rdd.map((row: Row) => (row(0), row.toSeq.drop(1))).collectAsMap()
 
       val f_feats = data.columns.filter(_ != "class").zipWithIndex.map(tuple => {
 
-        var sumMean: Double = 0
-        var sumVar: Double = 0
-
         var new_classes = classes
+
+        var inter_result = 0.0
 
         classes.foreach(class_name => {
 
-          val meanC = meanData(class_name)(tuple._2).toString.toDouble
           new_classes = new_classes.drop(1)
 
           new_classes.foreach(class2_name => {
-            val meanK = meanData(class2_name)(tuple._2).toString.toDouble
-            sumMean += scala.math.pow(meanC + meanK, 2) * proportions(class2_name) * proportions(class_name)
+
+            val minmaxi = scala.math.min(maxData(class_name)(tuple._2).toString.toDouble, maxData(class2_name)(tuple._2).toString.toDouble)
+            val maxmini = scala.math.max(minData(class_name)(tuple._2).toString.toDouble, minData(class2_name)(tuple._2).toString.toDouble)
+            val maxmaxi = scala.math.max(maxData(class_name)(tuple._2).toString.toDouble, maxData(class2_name)(tuple._2).toString.toDouble)
+            val minmini = scala.math.min(minData(class_name)(tuple._2).toString.toDouble, minData(class2_name)(tuple._2).toString.toDouble)
+            inter_result += scala.math.max(0, (minmaxi - maxmini) / (maxmaxi - minmini + 0.001))
+
           })
-          val data_null = if (varData(class_name)(tuple._2) == null) 1.0 else varData(class_name)(tuple._2).toString.toDouble
-          sumVar += data_null
+
         })
 
-        sumMean / sumVar
+        inter_result
+
       })
 
-      result = 1 / f_feats.max
+      f_feats.sum
+
 
     }
-
-    result
-
-  }
-
-  def f2(dataframe: DataFrame, br_attributes: Broadcast[Map[Int, (Option[Set[String]], String)]], sc: SparkContext, transposedRDD: RDD[(Int, Seq[String])]): Double = {
-
-
-    var data: DataFrame = dataframe
-    var result = 0.0
-    val classes = br_attributes.value(br_attributes.value.size - 1)._1.get
-    //We need one hot encode the categorical features
-    val categorical_features = data.columns.dropRight(1).filter(x => br_attributes.value.values.filter(_._1.isDefined).map(_._2).toList.contains(x))
-    categorical_features.foreach(name => {
-      data.select(name).distinct().collect().foreach(row => {
-        val option = row(0)
-        val function = udf((item: String) => if (item == option) 1 else 0)
-        data = data.withColumn(s"${name}_$option", function(col(name)))
-      })
-      data = data.drop(name)
-    })
-
-    val expr_min = data.columns.filter(_ != "class").map(_ -> "min").toMap
-    val minData = data.groupBy("class").agg(expr_min).collect().map((row: Row) => (row(0), row.toSeq.drop(1))).toMap
-    val expr_max = data.columns.filter(_ != "class").map(_ -> "max").toMap
-    val maxData = data.groupBy("class").agg(expr_max).collect().map((row: Row) => (row(0), row.toSeq.drop(1))).toMap
-
-    val f_feats = data.columns.filter(_ != "class").zipWithIndex.map(tuple => {
-
-      var new_classes = classes
-
-      var inter_result = 0.0
-
-      classes.foreach(class_name => {
-
-        new_classes = new_classes.drop(1)
-
-        new_classes.foreach(class2_name => {
-
-          val minmaxi = scala.math.min(maxData(class_name)(tuple._2).toString.toDouble, maxData(class2_name)(tuple._2).toString.toDouble)
-          val maxmini = scala.math.max(minData(class_name)(tuple._2).toString.toDouble, minData(class2_name)(tuple._2).toString.toDouble)
-          val maxmaxi = scala.math.max(maxData(class_name)(tuple._2).toString.toDouble, maxData(class2_name)(tuple._2).toString.toDouble)
-          val minmini = scala.math.min(minData(class_name)(tuple._2).toString.toDouble, minData(class2_name)(tuple._2).toString.toDouble)
-          inter_result += scala.math.max(0, (minmaxi - maxmini) / (maxmaxi - minmini + 0.001))
-
-        })
-
-      })
-
-      inter_result
-
-    })
-
-    f_feats.sum
-
 
   }
 
