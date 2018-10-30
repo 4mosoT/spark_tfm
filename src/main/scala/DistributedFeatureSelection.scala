@@ -573,7 +573,6 @@ object DistributedFeatureSelection {
   }
 
   object fisherRatio extends complexityMeasure {
-
     var count: Int = 0
     var meanData: Map[String, Seq[(String, Double)]] = Map()
     var varData: Map[String, Seq[(String, Double)]] = Map()
@@ -609,9 +608,7 @@ object DistributedFeatureSelection {
           val row_class = row(0)
           filtered_columns.zip(row.toSeq.drop(1)).map(tuple => (tuple._1, (row_class, tuple._2)))
         }).groupByKey().map(tuple => (tuple._1, tuple._2.toSeq.map(tuple => (tuple._1.toString, tuple._2.toString.toDouble)))).collectAsMap()
-        println("MeanData: ", rawMeanData)
         this.meanData ++= rawMeanData
-
 
         val expr_var = filtered_columns.map(_ -> "var_samp").toMap
         val rawVarData = data.groupBy("class").agg(expr_var).rdd.flatMap((row: Row) => {
