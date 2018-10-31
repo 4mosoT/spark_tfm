@@ -33,6 +33,7 @@ object DistributedFeatureSelection {
       val overlap: ScallopOption[Double] = opt[Double]("overlap", default = Some(0.0), descr = "Overlap")
       val class_index: ScallopOption[Boolean] = toggle("first", noshort = true, default = Some(false), descrYes = "Required if class is first column")
       val numParts: ScallopOption[Int] = opt[Int]("partitions", validate = 0 < _, descr = "Num of partitions", required = true)
+      val parallelism: ScallopOption[Int] = opt[Int]("parallelism", default = Some(100), validate = 0 < _, descr = "Num of RDDpartitions", required = true)
       val alpha: ScallopOption[Double] = opt[Double]("alpha", descr = "Aplha Value for threshold computation / Default 0.75", validate = { x => 0 <= x && x <= 1 }, default = Some(0.75))
       val fs_algorithms: ScallopOption[String] = opt[String](required = true, default = Some("CFS,IG,RF"), descr = "List of feature selection algorithm")
       val complexity_measure: ScallopOption[String] = opt[String](name = "comp_measure", required = true, default = Some("F1,F2"), descr = "List of complexity measures")
@@ -45,9 +46,11 @@ object DistributedFeatureSelection {
     val ss = SparkSession.builder().appName("distributed_feature_selection").master("local[*]")
       .getOrCreate()
     val sc = ss.sparkContext
+
+
     sc.setLogLevel("ERROR")
 
-    val unfiltered_rdd = parse_RDD(sc.textFile(opts.dataset()), ',', opts.class_index())
+    val unfiltered_rdd = parse_RDD(sc.textFile(opts.dataset(), opts.parallelism()), ',', opts.class_index())
 
     //Filter classes with only 1 example
     val one_sample_key = unfiltered_rdd.map(x => (x.last, x)).countByKey().filter(_._2 < 1).keySet
@@ -79,7 +82,7 @@ object DistributedFeatureSelection {
       //val (votes, times, cfs_selected) = getVotesVector(train_rdd, br_attributes, opts.numParts(), opts.partType(), opts.overlap(), "CFS", cfs_features_selected, transposed_rdd, sc)
       val start_votes_time = System.currentTimeMillis()
       val (votes, times, cfs_selected) = getVotesVector(train_rdd, br_attributes, opts.numParts(), opts.partType(), opts.overlap(), "CFS", cfs_features_selected, sc)
-      println(s"\nTime $fsa computation stats:${times.stats()}. Computation time ${System.currentTimeMillis() - start_votes_time}")
+      println(s"\nTime $fsa computation stats:${times.stats()}. Votes computation time ${System.currentTimeMillis() - start_votes_time}")
 
       if (fsa == "CFS") cfs_features_selected = (cfs_selected.sum() / cfs_selected.count()).toInt
 
@@ -114,7 +117,7 @@ object DistributedFeatureSelection {
           opts.numParts(), 5, transposed_rdd, globalCompyMeasure, ss)
 
         println(s"Number of features is ${features.count() - 1}")
-        println(s"Feature selection computation time is ${System.currentTimeMillis() - start_sub_time} (votes + threshold)")
+        println(s"Threshold computation time is ${System.currentTimeMillis() - start_sub_time}")
 
 
         if (fsa == "CFS") {
@@ -197,13 +200,12 @@ object DistributedFeatureSelection {
     val rounds = 5
     var times = sc.emptyRDD[Long]
     var cfs_selected = sc.emptyRDD[Int]
-
-
+    var x = 0
+    //    val rdd = old_rdd.repartition(100)
     val votes = {
       var sub_votes = sc.emptyRDD[(String, Int)]
       if (vertical) {
-        val br_classes = sc.broadcast(br_attributes.value(br_attributes.value.size - 1)._1.get)
-        for (_ <- 1 to rounds) {
+        while (x < rounds) {
           val result = verticalPartitioningFeatureSelection(sc, rdd,
             br_attributes, numParts, filter, overlap, ranking_features)
           sub_votes = sub_votes ++ result.map(x => (x._1, x._2._1))
@@ -211,12 +213,13 @@ object DistributedFeatureSelection {
           if (filter == "CFS") {
             cfs_selected ++= result.map(x => x._2._3)
           }
+          x += 1
         }
 
       } else {
         val (schema, class_schema_index) = WekaWrapper.attributesSchema(br_attributes.value)
         val br_schema = sc.broadcast(schema)
-        for (_ <- 1 to rounds) {
+        while (x < rounds) {
           val result = horizontalPartitioningFeatureSelection(sc, rdd,
             br_attributes, numParts, filter, br_schema, class_schema_index, ranking_features)
           sub_votes = sub_votes ++ result.map(x => (x._1, x._2._1))
@@ -224,6 +227,8 @@ object DistributedFeatureSelection {
           if (filter == "CFS") {
             cfs_selected ++= result.map(x => x._2._3)
           }
+          x += 1
+
         }
         br_schema.unpersist()
       }
@@ -362,24 +367,23 @@ object DistributedFeatureSelection {
                                              class_schema_index: Int, ranking_features: Int): RDD[(String, (Int, Long, Int))] = {
 
     val classes = br_attributes.value(br_attributes.value.size - 1)._1.get
-    var mergedRDD = sc.emptyRDD[(Int, Array[String])]
-
     val acum_classes = classes.toSeq.map(class_ => class_ -> sc.longAccumulator(class_)).toMap
 
-    input.map(row => {
+    val rdd_repartition = input.map(row => {
       acum_classes(row.last).add(1)
       (acum_classes(row.last).value % numParts, row)
-
     })
-      .combineByKey(
-        (row: Array[String]) => {
-          val data = new Instances("Rel", br_attributes_schema.value, 0)
-          data.setClassIndex(class_schema_index)
-          WekaWrapper.addRowToInstances(data, br_attributes.value, br_attributes_schema.value, row)
-        },
-        (inst: Instances, row: Array[String]) => WekaWrapper.addRowToInstances(inst, br_attributes.value, br_attributes_schema.value, row),
-        (inst1: Instances, inst2: Instances) => WekaWrapper.mergeInstances(inst1, inst2)
-      )
+
+
+    rdd_repartition.combineByKey(
+      (row: Array[String]) => {
+        val data = new Instances("Rel", br_attributes_schema.value, 0)
+        data.setClassIndex(class_schema_index)
+        WekaWrapper.addRowToInstances(data, br_attributes.value, br_attributes_schema.value, row)
+      },
+      (inst: Instances, row: Array[String]) => WekaWrapper.addRowToInstances(inst, br_attributes.value, br_attributes_schema.value, row),
+      (inst1: Instances, inst2: Instances) => WekaWrapper.mergeInstances(inst1, inst2)
+    )
       .flatMap {
         case (_, inst) =>
           val start_time = System.currentTimeMillis()
@@ -387,7 +391,6 @@ object DistributedFeatureSelection {
           val time = System.currentTimeMillis() - start_time
           val selected_attributes = WekaWrapper.getAttributes(filtered_data)
           (br_attributes.value.values.map(_._2).toSet.diff(selected_attributes) - br_attributes.value(br_attributes.value.size - 1)._2).map((_, (1, time, filtered_data.numAttributes())))
-
       }.reduceByKey((t1, t2) => (t1._1 + t2._1, math.max(t1._2, t2._2), math.max(t1._3, t2._3)))
 
 
@@ -576,7 +579,6 @@ object DistributedFeatureSelection {
     override def compute(dataframe: DataFrame, br_attributes: Broadcast[Map[Int, (Option[Set[String]], String)]], sc: SparkContext): Double = {
       var data: DataFrame = dataframe
       var result: Double = 9999999
-
       if (data.columns.length > 2) {
         //We need one hot encode the categorical features
         val categorical_features = data.columns.dropRight(1).filter(x => br_attributes.value.values.filter(_._1.isDefined).map(_._2).toList.contains(x))
