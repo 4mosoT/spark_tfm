@@ -89,13 +89,6 @@ object DistributedFeatureSelection {
 
         println(s"*****Using $fsa algorithm with $compmeasure as complexity measure*****")
 
-
-        //        val globalCompyMeasure = compmeasure match {
-        //          case "F1" => fisherRatio _
-        //          case "F2" => f2 _
-        //          case _ => zeroGlobal _
-        //        }
-
         val globalCompyMeasure = compmeasure match {
           case "F1" => fisherRatio
           case "F2" => f2
@@ -370,12 +363,14 @@ object DistributedFeatureSelection {
 
     val classes = br_attributes.value(br_attributes.value.size - 1)._1.get
     var mergedRDD = sc.emptyRDD[(Int, Array[String])]
-    classes.foreach(_class => {
-      val auxRDD = input.filter(_.last == _class)
-      val tozip = scala.util.Random.shuffle(0 to auxRDD.count().toInt)
-      mergedRDD ++= auxRDD.zipWithIndex().map { case (row: Array[String], index: Long) => (tozip(index.toInt) % numParts, row) }
+
+    val acum_classes = classes.toSeq.map(class_ => class_ -> sc.longAccumulator(class_)).toMap
+
+    input.map(row => {
+      acum_classes(row.last).add(1)
+      (acum_classes(row.last).value % numParts, row)
+
     })
-    mergedRDD
       .combineByKey(
         (row: Array[String]) => {
           val data = new Instances("Rel", br_attributes_schema.value, 0)
