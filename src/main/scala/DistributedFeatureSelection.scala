@@ -43,7 +43,7 @@ object DistributedFeatureSelection {
     }
 
     val start_time = System.currentTimeMillis()
-    val ss = SparkSession.builder().appName("distributed_feature_selection")//.master("local[*]")
+    val ss = SparkSession.builder().appName("distributed_feature_selection").master("local[*]")
       .getOrCreate()
     val sc = ss.sparkContext
 
@@ -261,9 +261,9 @@ object DistributedFeatureSelection {
     val aux = sc.parallelize(br_attributes.value.values.map(x => (x._2, 0)).toList).union(votes)
     val selected_features_0_votes = aux.reduceByKey(_ + _).filter(_._2 == 0).map(_._1)
 
+
     val alpha = alpha_value
     var e_v = collection.mutable.ArrayBuffer[(Int, Double)]()
-
     var compMeasure = 0.0
     var selected_features_aux = 0
     val step = if (vertical) 1 else 5
@@ -277,7 +277,7 @@ object DistributedFeatureSelection {
         println(s"Number of features to be dataframed: ${selected_features_indexes.length - 1}")
         selected_features_aux = selected_features_indexes.length
         val selected_features_rdd = rdd.map(row => row.zipWithIndex.filter { case (_, index) => selected_features_indexes.contains(index) })
-        val retained_feat_percent = (selected_features_indexes.length.toDouble / br_attributes.value.size - 1) * 100
+        val retained_feat_percent = (selected_features_indexes.length.toDouble / (br_attributes.value.size - 1)) * 100
         val struct = true
         val schema = StructType(selected_features.sortBy(x => if (x != "class") x.substring(4).toInt else br_attributes.value.size).map(name => StructField(name, StringType, struct)).collect())
         val selected_features_dataframe = ss.createDataFrame(selected_features_rdd.map(row => Row.fromSeq(row.map(_._1))), schema = schema)
@@ -293,16 +293,13 @@ object DistributedFeatureSelection {
         } else {
           compMeasure = globalComplexityMeasure.compute(selected_features_dataframe, br_attributes, sc)
         }
-        println(s"Time to compute complexity measure ${System.currentTimeMillis() - start_meassure_time}")
-
+        println(s"Time to compute complexity measure ${System.currentTimeMillis() - start_meassure_time} Value: $compMeasure")
         e_v += ((a, alpha * compMeasure + (1 - alpha) * retained_feat_percent))
 
       }
     }
-
     val selected_threshold = e_v.minBy(_._2)._1
     val features = selected_features_0_votes ++ votes.filter(_._2 < selected_threshold).map(_._1)
-
     features
   }
 
