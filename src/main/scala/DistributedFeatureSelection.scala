@@ -43,7 +43,7 @@ object DistributedFeatureSelection {
     }
 
     val start_time = System.currentTimeMillis()
-    val ss = SparkSession.builder().appName("distributed_feature_selection")//.master("local[*]")
+    val ss = SparkSession.builder().appName("distributed_feature_selection").master("local[*]")
       .getOrCreate()
     val sc = ss.sparkContext
 
@@ -295,7 +295,7 @@ object DistributedFeatureSelection {
         }
         val sub_e_v = (a, alpha * compMeasure + (1 - alpha) * retained_feat_percent)
         e_v += sub_e_v
-        println(s"Time to compute complexity measure ${System.currentTimeMillis() - start_meassure_time} EV: $sub_e_v\n")
+        println(s"Time to compute complexity measure ${System.currentTimeMillis() - start_meassure_time} EV: $sub_e_v")
 
       }
     }
@@ -615,7 +615,7 @@ object DistributedFeatureSelection {
         val f_feats = data.columns.filter(_ != "class").map(column_name => {
 
           var sumMean: Double = 0
-          var sumVar: Double = 1
+          var sumVar: Double = 0.001
 
           var new_classes = classes
 
@@ -625,11 +625,10 @@ object DistributedFeatureSelection {
             new_classes = new_classes.drop(1)
 
             new_classes.foreach(class2_name => {
-              val meanK = this.meanData(column_name).filter(_._1 == class_name).head._2
-              sumMean += scala.math.pow(meanC + meanK, 2) * this.proportions(class2_name) * this.proportions(class_name)
+              val meanK = this.meanData(column_name).filter(_._1 == class2_name).head._2
+              sumMean += scala.math.pow(meanC - meanK, 2) * this.proportions(class2_name) * this.proportions(class_name)
             })
-            val data_null = this.varData(column_name).filter(_._1 == class_name).head._2
-            sumVar += data_null
+            sumVar += this.varData(column_name).filter(_._1 == class_name).head._2
           })
           sumMean / sumVar
         })
@@ -671,7 +670,7 @@ object DistributedFeatureSelection {
 
         var new_classes = classes
 
-        var inter_result = 0.0
+        var inter_result = 1.0
 
         classes.foreach(class_name => {
 
@@ -683,7 +682,8 @@ object DistributedFeatureSelection {
             val maxmini = scala.math.max(minData(class_name)(tuple._2).toString.toDouble, minData(class2_name)(tuple._2).toString.toDouble)
             val maxmaxi = scala.math.max(maxData(class_name)(tuple._2).toString.toDouble, maxData(class2_name)(tuple._2).toString.toDouble)
             val minmini = scala.math.min(minData(class_name)(tuple._2).toString.toDouble, minData(class2_name)(tuple._2).toString.toDouble)
-            inter_result += scala.math.max(0, (minmaxi - maxmini) / (maxmaxi - minmini + 0.001))
+
+            inter_result += scala.math.max(0, minmaxi - maxmini) / (maxmaxi - minmini + 0.001)
 
           })
 
@@ -693,7 +693,7 @@ object DistributedFeatureSelection {
 
       })
 
-      f_feats.sum
+      f_feats.product
 
 
     }
