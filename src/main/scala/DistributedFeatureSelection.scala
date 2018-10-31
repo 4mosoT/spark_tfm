@@ -43,7 +43,7 @@ object DistributedFeatureSelection {
     }
 
     val start_time = System.currentTimeMillis()
-    val ss = SparkSession.builder().appName("distributed_feature_selection").master("local[*]")
+    val ss = SparkSession.builder().appName("distributed_feature_selection")//.master("local[*]")
       .getOrCreate()
     val sc = ss.sparkContext
 
@@ -274,7 +274,7 @@ object DistributedFeatureSelection {
       val selected_features_indexes = selected_features.map(value => if (value != "class") value.substring(4).toInt else br_attributes.value.size - 1).collect()
 
       if (selected_features_indexes.length > 1 && selected_features_aux != selected_features_indexes.length) {
-        println(s"Number of features to be dataframed: ${selected_features_indexes.length - 1}")
+        println(s"Number of selected features: ${selected_features_indexes.length - 1}")
         selected_features_aux = selected_features_indexes.length
         val selected_features_rdd = rdd.map(row => row.zipWithIndex.filter { case (_, index) => selected_features_indexes.contains(index) })
         val retained_feat_percent = (selected_features_indexes.length.toDouble / (br_attributes.value.size - 1)) * 100
@@ -293,8 +293,9 @@ object DistributedFeatureSelection {
         } else {
           compMeasure = globalComplexityMeasure.compute(selected_features_dataframe, br_attributes, sc)
         }
-        println(s"Time to compute complexity measure ${System.currentTimeMillis() - start_meassure_time} Value: $compMeasure")
-        e_v += ((a, alpha * compMeasure + (1 - alpha) * retained_feat_percent))
+        val sub_e_v = (a, alpha * compMeasure + (1 - alpha) * retained_feat_percent)
+        e_v += sub_e_v
+        println(s"Time to compute complexity measure ${System.currentTimeMillis() - start_meassure_time} EV: $sub_e_v\n")
 
       }
     }
@@ -614,7 +615,7 @@ object DistributedFeatureSelection {
         val f_feats = data.columns.filter(_ != "class").map(column_name => {
 
           var sumMean: Double = 0
-          var sumVar: Double = 0
+          var sumVar: Double = 1
 
           var new_classes = classes
 
@@ -630,10 +631,8 @@ object DistributedFeatureSelection {
             val data_null = this.varData(column_name).filter(_._1 == class_name).head._2
             sumVar += data_null
           })
-
           sumMean / sumVar
         })
-
         result = 1 / f_feats.max
 
       }
