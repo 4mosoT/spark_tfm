@@ -252,7 +252,7 @@ object DistributedFeatureSelection {
     val votes_length = votes.count()
     val avg_votes = votes.map(_._2).sum / votes_length
     val std_votes = math.sqrt(votes.map(votes => math.pow(votes._2 - avg_votes, 2)).sum / votes_length)
-    val minVote = if (vertical) rounds * (numParts - 1) else (avg_votes - (std_votes / 2)).toInt
+    val minVote = if (vertical) rounds * (numParts - 1) + 1 else (avg_votes - (std_votes / 2)).toInt
     val maxVote = if (vertical) rounds * numParts else (avg_votes + (std_votes / 2)).toInt
 
     //We get the features that aren't in the votes set. That means features -> Votes = 0
@@ -300,6 +300,7 @@ object DistributedFeatureSelection {
       }
     }
     val selected_threshold = e_v.minBy(_._2)._1
+    println(s"Threshold $selected_threshold")
     val features = selected_features_0_votes ++ votes.filter(_._2 < selected_threshold).map(_._1)
     features
   }
@@ -648,7 +649,6 @@ object DistributedFeatureSelection {
     override def compute(dataframe: DataFrame, br_attributes: Broadcast[Map[Int, (Option[Set[String]], String)]], sc: SparkContext): Double = {
 
       var data: DataFrame = dataframe
-      var result = 0.0
       val classes = br_attributes.value(br_attributes.value.size - 1)._1.get
       //We need one hot encode the categorical features
       val categorical_features = data.columns.dropRight(1).filter(x => br_attributes.value.values.filter(_._1.isDefined).map(_._2).toList.contains(x))
@@ -666,37 +666,37 @@ object DistributedFeatureSelection {
       val expr_max = data.columns.filter(_ != "class").map(_ -> "max").toMap
       val maxData = data.groupBy("class").agg(expr_max).rdd.map((row: Row) => (row(0), row.toSeq.drop(1))).collectAsMap()
 
-      val f_feats = data.columns.filter(_ != "class").zipWithIndex.map(tuple => {
+      var F2 = 0.0
+      var new_classes = classes
+      classes.foreach(class_name => {
 
-        var new_classes = classes
+        new_classes = new_classes.drop(1)
 
-        var inter_result = 1.0
+        new_classes.foreach(class2_name => {
 
-        classes.foreach(class_name => {
-
-          new_classes = new_classes.drop(1)
-
-          new_classes.foreach(class2_name => {
+          var twoClassF2 = 1.0
+          data.columns.filter(_ != "class").zipWithIndex.foreach(tuple => {
 
             val minmaxi = scala.math.min(maxData(class_name)(tuple._2).toString.toDouble, maxData(class2_name)(tuple._2).toString.toDouble)
             val maxmini = scala.math.max(minData(class_name)(tuple._2).toString.toDouble, minData(class2_name)(tuple._2).toString.toDouble)
             val maxmaxi = scala.math.max(maxData(class_name)(tuple._2).toString.toDouble, maxData(class2_name)(tuple._2).toString.toDouble)
             val minmini = scala.math.min(minData(class_name)(tuple._2).toString.toDouble, minData(class2_name)(tuple._2).toString.toDouble)
-
-            inter_result += scala.math.max(0, minmaxi - maxmini) / (maxmaxi - minmini + 0.001)
+            if (maxmaxi - minmini != 0) {
+              twoClassF2 += (minmaxi - maxmini) / (maxmaxi - minmini)
+            }
 
           })
 
+          F2 += math.abs(twoClassF2)
+
         })
 
-        inter_result
 
       })
 
-      f_feats.product
+      F2 / (data.columns.length - 1)
 
-
-    }
+     }
 
   }
 
