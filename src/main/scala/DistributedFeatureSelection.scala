@@ -43,7 +43,7 @@ object DistributedFeatureSelection {
     }
 
     val start_time = System.currentTimeMillis()
-    val ss = SparkSession.builder().appName("distributed_feature_selection").master("local[*]")
+    val ss = SparkSession.builder().appName("distributed_feature_selection")//.master("local[*]")
       .getOrCreate()
     val sc = ss.sparkContext
 
@@ -64,10 +64,6 @@ object DistributedFeatureSelection {
 
     val fs_algorithms = opts.fs_algorithms().split(",")
     val comp_measures = opts.complexity_measure().split(",")
-
-    //val transposed_rdd = if (!opts.partType()) sc.emptyRDD[(Int, Seq[String])] else transposeRDD(train_rdd)
-    val transposed_rdd = sc.emptyRDD[(Int, Seq[String])]
-    transposed_rdd.cache()
 
     var cfs_features_selected = 1
 
@@ -114,7 +110,7 @@ object DistributedFeatureSelection {
 
         /** Here we get the selected features **/
         val features = computeThreshold(train_rdd, votes, opts.alpha(), classifier, br_attributes, opts.partType(),
-          opts.numParts(), 5, transposed_rdd, globalCompyMeasure, ss)
+          opts.numParts(), 5, globalCompyMeasure, ss)
 
         println(s"Number of features is ${features.count() - 1}")
         println(s"Threshold computation time is ${System.currentTimeMillis() - start_sub_time}")
@@ -240,7 +236,7 @@ object DistributedFeatureSelection {
 
   def computeThreshold(rdd: RDD[Array[String]], votes: RDD[(String, Int)], alpha_value: Double, classifier: Option[PipelineStage],
                        br_attributes: Broadcast[Map[Int, (Option[Set[String]], String)]],
-                       vertical: Boolean, numParts: Int, rounds: Int = 5, transpose_input: RDD[(Int, Seq[String])],
+                       vertical: Boolean, numParts: Int, rounds: Int = 5,
                        globalComplexityMeasure: DistributedFeatureSelection.complexityMeasure,
                        ss: SparkSession): RDD[String] = {
 
@@ -252,8 +248,10 @@ object DistributedFeatureSelection {
     val votes_length = votes.count()
     val avg_votes = votes.map(_._2).sum / votes_length
     val std_votes = math.sqrt(votes.map(votes => math.pow(votes._2 - avg_votes, 2)).sum / votes_length)
-    val minVote = if (vertical) rounds * (numParts - 1) + 1 else (avg_votes - (std_votes / 2)).toInt
+    val minVote = if (vertical) avg_votes.toInt else (avg_votes - (std_votes / 2)).toInt
     val maxVote = if (vertical) rounds * numParts else (avg_votes + (std_votes / 2)).toInt
+
+
 
     //We get the features that aren't in the votes set. That means features -> Votes = 0
     // ****Class column included****
@@ -401,21 +399,21 @@ object DistributedFeatureSelection {
 
     val class_index = br_attributes.value.size - 1
     val items = Math.ceil((br_attributes.value.size - 1) / numParts.toDouble).toInt
-
     val splittedAttributes = Random.shuffle(br_attributes.value.filter(_._2._2 != "class").keys.toSeq).grouped(items).toList
 
-    var mergedRDD = sc.emptyRDD[(Int, (Int, Array[String]))]
     var per_partition_schema = Seq[(Int, util.ArrayList[Attribute])]()
 
+    var RDDList: Seq[RDD[(Int, (Int, Array[String]))]] = Seq[RDD[(Int, (Int, Array[String]))]]()
+
     splittedAttributes.zipWithIndex.foreach({ case (attributes, index) =>
-      mergedRDD ++= input.map(row => (index, (index, ((attributes :+ class_index) collect row).to[Array])))
+      RDDList = RDDList :+ input.map(row => (index, (index, ((attributes :+ class_index) collect row).to[Array])))
       val schema = WekaWrapper.attributesSchema(br_attributes.value.filterKeys((attributes :+ class_index).contains(_)))
       per_partition_schema = per_partition_schema :+ (index, schema._1)
     })
 
     val br_per_partition_schemas = sc.broadcast(per_partition_schema.toMap)
 
-    mergedRDD
+    sc.union(RDDList)
       .combineByKey(
         (tuple: (Int, Array[String])) => {
 
