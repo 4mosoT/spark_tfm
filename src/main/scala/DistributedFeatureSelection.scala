@@ -248,7 +248,7 @@ object DistributedFeatureSelection {
     val votes_length = votes.count()
     val avg_votes = votes.map(_._2).sum / votes_length
     val std_votes = math.sqrt(votes.map(votes => math.pow(votes._2 - avg_votes, 2)).sum / votes_length)
-    val minVote = if (vertical) avg_votes.toInt else (avg_votes - (std_votes / 2)).toInt
+    val minVote = if (vertical) (avg_votes - std_votes).toInt else (avg_votes - (std_votes / 2)).toInt
     val maxVote = if (vertical) rounds * numParts else (avg_votes + (std_votes / 2)).toInt
 
 
@@ -418,6 +418,7 @@ object DistributedFeatureSelection {
         (inst: Instances, tuple: (Int, Array[String])) => WekaWrapper.addRowToInstances(inst, br_attributes.value, br_per_partition_schemas.value(tuple._1), tuple._2),
         (inst1: Instances, inst2: Instances) => WekaWrapper.mergeInstances(inst1, inst2)
       )
+      .repartition(if (numParts < 200) numParts else 200)
       .flatMap {
         case (_, inst) =>
           val start_time = System.currentTimeMillis()
