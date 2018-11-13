@@ -401,31 +401,18 @@ object DistributedFeatureSelection {
     val items = Math.ceil((br_attributes.value.size - 1) / numParts.toDouble).toInt
     val splittedAttributes = Random.shuffle(br_attributes.value.filter(_._2._2 != "class").keys.toSeq).grouped(items).toList
 
-    var per_partition_schema = Seq[(Int, util.ArrayList[Attribute])]()
-
-    var RDDList: Seq[RDD[(Int, (Int, Array[String]))]] = Seq[RDD[(Int, (Int, Array[String]))]]()
-
-    splittedAttributes.zipWithIndex.foreach({ case (attributes, index) =>
-      RDDList = RDDList :+ input.map(row => (index, (index, ((attributes :+ class_index) collect row).to[Array])))
-      val schema = WekaWrapper.attributesSchema(br_attributes.value.filterKeys((attributes :+ class_index).contains(_)))
-      per_partition_schema = per_partition_schema :+ (index, schema._1)
+    val instances_list = splittedAttributes.map({
+      attributes =>
+        val schema = WekaWrapper.attributesSchema(br_attributes.value.filterKeys((attributes :+ class_index).contains(_)))
+        input.map(row =>((attributes :+ class_index) collect row).to[Array])
+          .aggregate(new Instances("Rel", schema._1, 0))(
+                      (inst:Instances, row:Array[String]) => WekaWrapper.addRowToInstances(inst, br_attributes.value, schema._1, row),
+                      (inst1:Instances, inst2:Instances) => WekaWrapper.mergeInstances(inst1, inst2))
     })
 
-    val br_per_partition_schemas = sc.broadcast(per_partition_schema.toMap)
-
-    sc.union(RDDList)
-      .combineByKey(
-        (tuple: (Int, Array[String])) => {
-
-          val data = new Instances("Rel", br_per_partition_schemas.value(tuple._1), 0)
-          data.setClassIndex(br_per_partition_schemas.value(tuple._1).size - 1)
-          WekaWrapper.addRowToInstances(data, br_attributes.value, br_per_partition_schemas.value(tuple._1), tuple._2)
-        },
-        (inst: Instances, tuple: (Int, Array[String])) => WekaWrapper.addRowToInstances(inst, br_attributes.value, br_per_partition_schemas.value(tuple._1), tuple._2),
-        (inst1: Instances, inst2: Instances) => WekaWrapper.mergeInstances(inst1, inst2)
-      )
+    sc.parallelize(instances_list)
       .flatMap {
-        case (_, inst) =>
+        inst =>
           val start_time = System.currentTimeMillis()
           val filtered_data = Filter.useFilter(inst, WekaWrapper.filterAttributes(inst, filter, ranking_features))
           val time = System.currentTimeMillis() - start_time
