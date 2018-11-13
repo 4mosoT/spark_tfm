@@ -398,14 +398,12 @@ object DistributedFeatureSelection {
     val items = Math.ceil((br_attributes.value.size - 1) / numParts.toDouble).toInt
     val splittedAttributes = Random.shuffle(br_attributes.value.filter(_._2._2 != "class").keys.toSeq).grouped(items).toList
 
-    var per_partition_schema = Seq[(Int, util.ArrayList[Attribute])]()
-
-    splittedAttributes.zipWithIndex.foreach({ case (attributes, index) =>
+    val per_partition_schema = sc.parallelize(splittedAttributes, 50).zipWithIndex.map({ case (attributes, index) =>
       val schema = WekaWrapper.attributesSchema(br_attributes.value.filterKeys((attributes :+ class_index).contains(_)))
-      per_partition_schema = per_partition_schema :+ (index, schema._1)
-    })
+      (index, schema._1)
+    }).collectAsMap()
 
-    val br_per_partition_schemas = sc.broadcast(per_partition_schema.toMap)
+    val br_per_partition_schemas = sc.broadcast(per_partition_schema)
     val br_splittedAttributes = sc.broadcast(splittedAttributes)
 
     input.flatMap(row => {
