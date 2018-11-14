@@ -43,9 +43,8 @@ object DistributedFeatureSelection {
     }
 
     val start_time = System.currentTimeMillis()
-    val ss = SparkSession.builder().appName("distributed_feature_selection")//.master("local[*]")
+    val ss = SparkSession.builder().config("spark.sql.codegen.wholeStage", false).appName("distributed_feature_selection")//.master("local[*]")
       .getOrCreate()
-    ss.conf.set("spark.sql.codegen.wholeStage", false)
     val sc = ss.sparkContext
 
     sc.setLogLevel("ERROR")
