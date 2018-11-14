@@ -43,7 +43,7 @@ object DistributedFeatureSelection {
     }
 
     val start_time = System.currentTimeMillis()
-    val ss = SparkSession.builder().config("spark.sql.codegen.wholeStage", false).appName("distributed_feature_selection")//.master("local[*]")
+    val ss = SparkSession.builder().appName("distributed_feature_selection")//.master("local[*]")
       .getOrCreate()
     val sc = ss.sparkContext
 
@@ -589,35 +589,41 @@ object DistributedFeatureSelection {
           this.proportions = samples_per_class.rdd.map(row => (row(0).toString, row(1).toString.toDouble / count)).collect().toMap
         }
 
-        val filtered_columns = data.columns.filter(x => x != "class" && !this.meanData.keySet.contains(x))
-        val br_filtered_columns = sc.broadcast(filtered_columns)
+        val filtered_columns_all = data.columns.filter(x => x != "class" && !this.meanData.keySet.contains(x))
 
-        val expr_mean = filtered_columns.map(_ -> "mean").toMap
-        val rawMeanRDD = data.select((filtered_columns:+"class").map(col(_)): _*).groupBy("class").agg(expr_mean).rdd
-        val rawMeanData = rawMeanRDD.flatMap((row: Row) => {
-          val row_class = row(0).toString
-          br_filtered_columns.value.zip(row.toSeq.drop(1)).map(tuple => (tuple._1, (row_class, tuple._2.toString.toDouble)))
-        }).combineByKey(
-          (tuple: (String, Double)) => Seq(tuple),
-          (seqtuple: Seq[(String, Double)], tuple: (String, Double)) => seqtuple:+ tuple,
-          (seqtuple1: Seq[(String, Double)], seqtuple2: Seq[(String, Double)]) => seqtuple1 ++ seqtuple2
-        ).collectAsMap()
+        //We need to grouped the columns in packets in order to avoid bug of operation growing beyond 64kb limit
+        filtered_columns_all.grouped(math.ceil(filtered_columns_all.length / 1000).toInt).foreach(filtered_columns => {
 
-        this.meanData ++= rawMeanData
+          val br_filtered_columns = sc.broadcast(filtered_columns)
 
-        val expr_var = filtered_columns.map(_ -> "var_samp").toMap
-        val rawVarRDD = data.select((filtered_columns:+"class").map(col(_)): _*).groupBy("class").agg(expr_var).rdd
-        val rawVarData = rawVarRDD.flatMap((row: Row) => {
-          val row_class = row(0).toString
-          br_filtered_columns.value.zip(row.toSeq.drop(1)).map(tuple => (tuple._1, (row_class, tuple._2.toString.toDouble)))
-        }).combineByKey(
-          (tuple: (String, Double)) => Seq(tuple),
-          (seqtuple: Seq[(String, Double)], tuple: (String, Double)) => seqtuple:+ tuple,
-          (seqtuple1: Seq[(String, Double)], seqtuple2: Seq[(String, Double)]) => seqtuple1 ++ seqtuple2
-        ).collectAsMap()
+          val expr_mean = filtered_columns.map(_ -> "mean").toMap
+          val rawMeanRDD = data.select((filtered_columns :+ "class").map(col(_)): _*).groupBy("class").agg(expr_mean).rdd
+          val rawMeanData = rawMeanRDD.flatMap((row: Row) => {
+            val row_class = row(0).toString
+            br_filtered_columns.value.zip(row.toSeq.drop(1)).map(tuple => (tuple._1, (row_class, tuple._2.toString.toDouble)))
+          }).combineByKey(
+            (tuple: (String, Double)) => Seq(tuple),
+            (seqtuple: Seq[(String, Double)], tuple: (String, Double)) => seqtuple :+ tuple,
+            (seqtuple1: Seq[(String, Double)], seqtuple2: Seq[(String, Double)]) => seqtuple1 ++ seqtuple2
+          ).collectAsMap()
+
+          this.meanData ++= rawMeanData
+
+          val expr_var = filtered_columns.map(_ -> "var_samp").toMap
+          val rawVarRDD = data.select((filtered_columns :+ "class").map(col(_)): _*).groupBy("class").agg(expr_var).rdd
+          val rawVarData = rawVarRDD.flatMap((row: Row) => {
+            val row_class = row(0).toString
+            br_filtered_columns.value.zip(row.toSeq.drop(1)).map(tuple => (tuple._1, (row_class, tuple._2.toString.toDouble)))
+          }).combineByKey(
+            (tuple: (String, Double)) => Seq(tuple),
+            (seqtuple: Seq[(String, Double)], tuple: (String, Double)) => seqtuple :+ tuple,
+            (seqtuple1: Seq[(String, Double)], seqtuple2: Seq[(String, Double)]) => seqtuple1 ++ seqtuple2
+          ).collectAsMap()
 
 
-        this.varData ++= rawVarData
+          this.varData ++= rawVarData
+
+        })
 
         val f_feats = data.columns.filter(_ != "class").map(column_name => {
 
