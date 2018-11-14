@@ -43,7 +43,7 @@ object DistributedFeatureSelection {
     }
 
     val start_time = System.currentTimeMillis()
-    val ss = SparkSession.builder().appName("distributed_feature_selection")//.master("local[*]")
+    val ss = SparkSession.builder().appName("distributed_feature_selection").master("local[*]")
       .getOrCreate()
     val sc = ss.sparkContext
 
