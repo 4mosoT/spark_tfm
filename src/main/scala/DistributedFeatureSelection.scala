@@ -8,7 +8,6 @@ import org.apache.spark.ml.evaluation.MulticlassClassificationEvaluator
 import org.apache.spark.ml.feature.{MinMaxScaler, OneHotEncoder, StringIndexer, VectorAssembler}
 import org.apache.spark.ml.{Pipeline, PipelineStage}
 import org.apache.spark.rdd.RDD
-import org.apache.spark.storage.StorageLevel._
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.types.{StringType, StructField, StructType}
 import org.apache.spark.sql.{DataFrame, Row, SparkSession}
@@ -44,10 +43,10 @@ object DistributedFeatureSelection {
     }
 
     val start_time = System.currentTimeMillis()
-    val ss = SparkSession.builder().appName("distributed_feature_selection").master("local[*]")
+    val ss = SparkSession.builder().appName("distributed_feature_selection")//.master("local[*]")
       .getOrCreate()
+    ss.conf.set("spark.sql.codegen.wholeStage", false)
     val sc = ss.sparkContext
-
 
     sc.setLogLevel("ERROR")
 
@@ -594,8 +593,8 @@ object DistributedFeatureSelection {
         val filtered_columns = data.columns.filter(x => x != "class" && !this.meanData.keySet.contains(x))
         val br_filtered_columns = sc.broadcast(filtered_columns)
 
-        val exp_mean = filtered_columns.map(_ -> "mean").toMap
-        val rawMeanRDD = data.select((filtered_columns:+"class").map(col(_)): _*).groupBy("class").agg(exp_mean).rdd
+        val expr_mean = filtered_columns.map(_ -> "mean").toMap
+        val rawMeanRDD = data.select((filtered_columns:+"class").map(col(_)): _*).groupBy("class").agg(expr_mean).rdd
         val rawMeanData = rawMeanRDD.flatMap((row: Row) => {
           val row_class = row(0).toString
           br_filtered_columns.value.zip(row.toSeq.drop(1)).map(tuple => (tuple._1, (row_class, tuple._2.toString.toDouble)))
@@ -604,7 +603,6 @@ object DistributedFeatureSelection {
           (seqtuple: Seq[(String, Double)], tuple: (String, Double)) => seqtuple:+ tuple,
           (seqtuple1: Seq[(String, Double)], seqtuple2: Seq[(String, Double)]) => seqtuple1 ++ seqtuple2
         ).collectAsMap()
-        print(rawMeanData)
 
         this.meanData ++= rawMeanData
 
