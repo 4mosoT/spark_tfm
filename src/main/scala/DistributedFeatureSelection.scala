@@ -8,6 +8,7 @@ import org.apache.spark.ml.evaluation.MulticlassClassificationEvaluator
 import org.apache.spark.ml.feature.{MinMaxScaler, OneHotEncoder, StringIndexer, VectorAssembler}
 import org.apache.spark.ml.{Pipeline, PipelineStage}
 import org.apache.spark.rdd.RDD
+import org.apache.spark.storage.StorageLevel._
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.types.{StringType, StructField, StructType}
 import org.apache.spark.sql.{DataFrame, Row, SparkSession}
@@ -249,7 +250,7 @@ object DistributedFeatureSelection {
     val avg_votes = votes.map(_._2).sum / votes_length
     val std_votes = math.sqrt(votes.map(votes => math.pow(votes._2 - avg_votes, 2)).sum / votes_length)
     val minVote = if (vertical) (avg_votes - std_votes).toInt else (avg_votes - (std_votes / 2)).toInt
-    val maxVote = if (vertical) rounds * numParts else (avg_votes + (std_votes / 2)).toInt
+    val maxVote = if (vertical) (avg_votes + std_votes).toInt else (avg_votes + (std_votes / 2)).toInt
 
 
     //We get the features that aren't in the votes set. That means features -> Votes = 0
@@ -591,18 +592,34 @@ object DistributedFeatureSelection {
         }
 
         val filtered_columns = data.columns.filter(x => x != "class" && !this.meanData.keySet.contains(x))
+        val br_filtered_columns = sc.broadcast(filtered_columns)
+
         val exp_mean = filtered_columns.map(_ -> "mean").toMap
-        val rawMeanData = data.groupBy("class").agg(exp_mean).rdd.flatMap((row: Row) => {
-          val row_class = row(0)
-          filtered_columns.zip(row.toSeq.drop(1)).map(tuple => (tuple._1, (row_class, tuple._2)))
-        }).groupByKey().map(tuple => (tuple._1, tuple._2.toSeq.map(tuple => (tuple._1.toString, tuple._2.toString.toDouble)))).collectAsMap()
+        val rawMeanRDD = data.select((filtered_columns:+"class").map(col(_)): _*).groupBy("class").agg(exp_mean).rdd
+        val rawMeanData = rawMeanRDD.flatMap((row: Row) => {
+          val row_class = row(0).toString
+          br_filtered_columns.value.zip(row.toSeq.drop(1)).map(tuple => (tuple._1, (row_class, tuple._2.toString.toDouble)))
+        }).combineByKey(
+          (tuple: (String, Double)) => Seq(tuple),
+          (seqtuple: Seq[(String, Double)], tuple: (String, Double)) => seqtuple:+ tuple,
+          (seqtuple1: Seq[(String, Double)], seqtuple2: Seq[(String, Double)]) => seqtuple1 ++ seqtuple2
+        ).collectAsMap()
+        print(rawMeanData)
+
         this.meanData ++= rawMeanData
 
         val expr_var = filtered_columns.map(_ -> "var_samp").toMap
-        val rawVarData = data.groupBy("class").agg(expr_var).rdd.flatMap((row: Row) => {
-          val row_class = row(0)
-          filtered_columns.zip(row.toSeq.drop(1)).map(tuple => (tuple._1, (row_class, tuple._2)))
-        }).groupByKey().map(tuple => (tuple._1, tuple._2.toSeq.map(tuple => (tuple._1.toString, tuple._2.toString.toDouble)))).collectAsMap()
+        val rawVarRDD = data.select((filtered_columns:+"class").map(col(_)): _*).groupBy("class").agg(expr_var).rdd
+        val rawVarData = rawVarRDD.flatMap((row: Row) => {
+          val row_class = row(0).toString
+          br_filtered_columns.value.zip(row.toSeq.drop(1)).map(tuple => (tuple._1, (row_class, tuple._2.toString.toDouble)))
+        }).combineByKey(
+          (tuple: (String, Double)) => Seq(tuple),
+          (seqtuple: Seq[(String, Double)], tuple: (String, Double)) => seqtuple:+ tuple,
+          (seqtuple1: Seq[(String, Double)], seqtuple2: Seq[(String, Double)]) => seqtuple1 ++ seqtuple2
+        ).collectAsMap()
+
+
         this.varData ++= rawVarData
 
         val f_feats = data.columns.filter(_ != "class").map(column_name => {
