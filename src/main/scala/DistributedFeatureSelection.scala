@@ -43,7 +43,9 @@ object DistributedFeatureSelection {
     }
 
     val start_time = System.currentTimeMillis()
-    val ss = SparkSession.builder().appName("distributed_feature_selection")//.master("local[*]")
+    val ss = SparkSession.builder().appName("distributed_feature_selection")
+      .config("spark.sql.codegen.wholeStage",false)
+      //.master("local[*]")
       .getOrCreate()
     val sc = ss.sparkContext
 
@@ -590,7 +592,6 @@ object DistributedFeatureSelection {
         }
 
         val filtered_columns_all = data.columns.filter(x => x != "class" && !this.meanData.keySet.contains(x))
-
 
         //We need to grouped the columns in packets in order to avoid bug of operation growing beyond 64kb limit
         filtered_columns_all.grouped(1000).foreach(filtered_columns => {
