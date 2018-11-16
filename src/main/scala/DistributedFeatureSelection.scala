@@ -276,9 +276,7 @@ object DistributedFeatureSelection {
         selected_features_aux = selected_features_indexes.length
         val selected_features_rdd = rdd.map(row => row.zipWithIndex.filter { case (_, index) => selected_features_indexes.contains(index) })
         val retained_feat_percent = (selected_features_indexes.length.toDouble / (br_attributes.value.size - 1)) * 100
-        val struct = true
-        //        val schema = StructType(selected_features.sortBy(x => if (x != "class") x.substring(4).toInt else br_attributes.value.size).map(name => StructField(name, StringType, struct)).collect())
-        //        val selected_features_dataframe = ss.createDataFrame(selected_features_rdd.map(row => Row.fromSeq(row.map(_._1))), schema = schema)
+
 
         val start_meassure_time = System.currentTimeMillis()
         if (classifier.isDefined) {
