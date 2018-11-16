@@ -1,6 +1,5 @@
 import java.util
 
-import org.apache.spark.sql.functions._
 import org.apache.spark.SparkContext
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.ml.classification._
@@ -274,7 +273,8 @@ object DistributedFeatureSelection {
       if (selected_features_indexes.length > 1 && selected_features_aux != selected_features_indexes.length) {
         println(s"Number of selected features: ${selected_features_indexes.length - 1}")
         selected_features_aux = selected_features_indexes.length
-        val selected_features_rdd = rdd.map(row => row.zipWithIndex.filter { case (_, index) => selected_features_indexes.contains(index) })
+        val selected_features_rdd = rdd.map(row => row.zipWithIndex.filter( tuple => selected_features_indexes.contains(tuple._2)))
+
         val retained_feat_percent = (selected_features_indexes.length.toDouble / (br_attributes.value.size - 1)) * 100
 
 
@@ -569,6 +569,7 @@ object DistributedFeatureSelection {
       var result: Double = 9999999
 
       if (rdd.first().length > 3) {
+
         val processed_rdd = rdd.map(
           x => (x.last._1, x.dropRight(1).flatMap(
             y =>
@@ -583,18 +584,23 @@ object DistributedFeatureSelection {
 
         if (this.proportions.isEmpty) {
           this.countbyKeyMap = processed_rdd.countByKey()
+
           this.count = rdd.count()
-          this.proportions = countbyKeyMap.map(tuple => (tuple._1, tuple._2.toDouble / count)).toMap
+          this.proportions = this.countbyKeyMap.map(tuple => (tuple._1, tuple._2.toDouble / count)).toMap
         }
 
+        val br_countbyKeyMap = sc.broadcast(this.countbyKeyMap)
 
         val meanMap = processed_rdd
           .reduceByKey((array1, array2) => array1.zip(array2).map(x => x._1 + x._2))
-          .map(x => (x._1, x._2.map(_ / this.countbyKeyMap(x._1)))).collectAsMap()
+          .map(x => (x._1, x._2.map(_ / br_countbyKeyMap.value(x._1)))).collectAsMap()
+
         val varMap = processed_rdd
           .map(tuple => (tuple._1, tuple._2.zip(meanMap(tuple._1)).map(x => scala.math.pow(x._1 - x._2, 2))))
           .reduceByKey((array1, array2) => array1.zip(array2).map(x => x._1 + x._2))
-          .map(x => (x._1, x._2.map(_ / this.countbyKeyMap(x._1)))).collectAsMap()
+          .map(x => (x._1, x._2.map(_ / br_countbyKeyMap.value(x._1)))).collectAsMap()
+
+        br_countbyKeyMap.unpersist()
 
         val classes = br_attributes.value(br_attributes.value.size - 1)._1.get
 
